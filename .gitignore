@@ -7,3 +7,6 @@ __pycache__/
 # Committing them would merge two PCs' trial counts into a wrong total.
 state/
 *.local.json
+
+# harvested store is machine state; the seed is the reproducible input
+state/candidates.db
