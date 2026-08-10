@@ -1,133 +1,141 @@
 # HANDOFF — pick up here
 
-Last updated **2026-08-10**. Overwrite this file each session; it is the
-"where were we" note, not a journal. Read `CLAUDE.md` first — it has the rules
-and the measured facts. **Read `vendor/trading-bots/AI_RULES.md` before writing
-a single reply to Kristijonas: short sentences, key points, no essays.**
+Last updated **2026-08-10**. Overwrite each session; this is "where were we",
+not a journal. Read `CLAUDE.md` for the rules and the measured facts.
+**Read `vendor/trading-bots/AI_RULES.md` before replying to Kristijonas:
+short sentences, key points, no essays. A long reply is a bug.**
 
 ---
 
-## State right now
-
-Nothing is running. Nothing is half-finished. Both repos are pushed and clean.
-
-| repo | commit | status |
-|---|---|---|
-| `trading_engine` | pushed to `KristijonasSim/trading_engine` | all 5 ideas built, 37/37 tests |
-| `trading-bots` (submodule at `vendor/`) | `786871a` | pushed |
+## Run it
 
 ```bash
-export TRADING_BOTS_DATA=~/trading-bots/scalping/data   # REQUIRED, see below
-python tests/test_engine.py                             # expect 23/23
-python -c "from engine.bridge import describe; print(describe())"
+cd ~/trading_engine
+export TRADING_BOTS_DATA=~/trading-bots/scalping/data     # REQUIRED
+
+python tests/test_engine.py      # 23/23  — budget, referee, noise rejection
+python tests/test_modules.py     # 14/14  — feeds, meta-labeling, regime
+PASS_LIMIT=6 python -m engine.runner        # one research pass
+open dashboard/index.html                   # the console
 ```
 
-`TRADING_BOTS_DATA` matters: the submodule ships the loaders but NOT the 572 MB
-price cache, which is gitignored. Without it every fetch silently re-downloads
-years of history into a directory nothing else reads.
+Fresh clone: `git clone --recurse-submodules …`, then set
+`TRADING_BOTS_DATA`. The submodule carries the loaders but NOT the 572 MB
+price cache, and without that var every fetch silently re-downloads years of
+history into a directory nothing reads.
 
 ---
 
-## What was built, and why it is shaped this way
+## True state — no rounding up
 
-**All five ideas are built.** 1 (referee) and 5 (the loop) are the core; 2
-(feeds), 3 (meta-labeling) and 4 (regime) are plug-ins on top.
-
-The context that explains every design choice: **the predecessor engine ran
-94,658 backtests and shipped 0 legs.** That is not bad execution — on 5.1 years
-of data the honest budget is ~48 independent trials, total, ever. So this engine
-exists to make each test **expensive, counted and justified**, not to run more
-of them faster. A faster engine without a budget is a worse engine.
-
-| file | job |
+| | count |
 |---|---|
-| `engine/budget.py` | MinBTL, expected-max-Sharpe, Deflated Sharpe, persistent ledger |
-| `engine/hypothesis.py` | the gate — mechanism, unexploited feed, pre-stated prediction, dupe check |
-| `engine/pipeline.py` | `screen` (free) → `evaluate` (spends budget, judges the MEDIAN cell) |
-| `engine/bridge.py` | the only seam to trading-bots; forces `STOP_FILL=close` |
-| `engine/feeds.py` | idea 2 — text to numeric series, correctly lagged |
-| `engine/metalabel.py` | idea 3 — take/skip on existing legs, purged CV |
-| `engine/regime.py` | idea 4 — multi-asset regime labels |
-| `demo_fomc.py` | end-to-end on live data, spends no budget |
+| harvested from TradingView | **40** |
+| Pine source stored | **1** |
+| fully tested end to end | **1** |
+| promoted | **0** |
+| trial budget spent | **1** of 47 (Crypto) |
 
-**The test that justifies the repo:** a 200-cell search over pure noise produces
-a flattering best cell (SR/bar 0.092 — guaranteed by the maths, not bad luck)
-and the pipeline rejects it at DSR 0.003, while a genuine edge under a small
-search passes at 1.000. If that check ever fails, the engine is worthless no
-matter what else is green.
+**Nothing works yet.** One strategy has been measured and it was breakeven.
+That is the honest position and the dashboard shows it.
+
+### The one real result
+
+SuperTrend STRATEGY (KivancOzbilgic, 24,654 likes — most popular in the
+corpus). Harvested → Pine translated → verified → backtested on our data,
+taker fees, `STOP_FILL=close`:
+
+| symbol | n | PF | win | total R |
+|---|---|---|---|---|
+| BTCUSDT | 155 | 0.917 | 43.9% | −5.8 |
+| ETHUSDT | 153 | 0.928 | 42.5% | −5.2 |
+| SOLUSDT | 153 | 1.182 | 47.1% | +11.5 |
+| **pooled** | **461** | **1.003** | **44.5%** | **+0.5** |
+
+Only SOL carries it — the per-coin-vs-pooled split HARD RULE 3 exists to
+expose. DSR 0.20, score 1, verdict fail.
 
 ---
 
-## Do this next
+## Do this next, in order
 
-All five ideas exist. What is missing is USE — nothing has produced a promoted
-leg yet, and that is the only output that counts.
+**1. Pull the remaining Pine sources.** 39 of 40 candidates are parked purely
+because `state/pine/<id>.pine` does not exist. The TradingView MCP corpus holds
+790 scripts / 566 sources; `mcp__tradingview__query_corpus` with
+`include_source=true` returns them 3 at a time. Write them to
+`state/pine/{id with : ; / replaced by _}.pine` and the runner picks them up
+with no code change. **This is the single highest-value next action** — it
+takes the engine from 1 tested to ~40.
 
-**1. Give the feed manufacturer more events.** `demo_fomc.py` runs clean and
-correctly rejects: FOMC scores show unstable IC sign across folds against
-forward DXY, GOLD and SP500. But 8 statements a year makes a step function with
-~8 distinct values per fold — the screen is underpowered whichever way it lands.
-Add ECB, BoE and BoJ statements (same `Document` shape, same fetch pattern) to
-get to ~30 events/year, and re-screen. That is the cheapest real progress
-available.
+**2. The scheduler.** A systemd timer running `python -m engine.runner` every
+N minutes. Deliberately a timer, not a daemon: a crashed long-lived process is
+invisible, a failing timer is a log line. ~30 minutes of work.
 
-**2. Try a Claude scorer against the lexicon control.** `ClaudeScorer` is
-written and unused — it needs `pip install anthropic` and `ANTHROPIC_API_KEY`.
-The comparison is the point: if the LLM score does not beat word-counting on
-the screen, it is not adding information and should not be paid for.
+**3. Deploy.** Oracle ARM free tier (4 cores / 24 GB), Kristijonas is
+provisioning. **Catch:** the translator uses headless `claude -p` on his
+subscription, so the box needs `claude` installed AND interactively
+authenticated once. If every translation starts failing with a non-zero exit,
+check auth expiry first.
 
-**3. Wire meta-labeling to a REAL leg.** `metalabel.py` is tested only on
-synthetic signals. Pull actual trades from
-`vendor/trading-bots/scalping/live_parity.py::build_book("n5")`, build entry-time
-features, and run `cross_validate`. An AUC near 0.5 is a perfectly good finding
-and should be reported, not tuned away.
+**4. Quantpedia as a second source.** Same `ingest_records()` shape as
+TradingView — it takes a list of dicts and does not care where they came from.
 
-**4. Feed the regime model real multi-asset data.** `build_features()` wants a
-wide close-price frame; `fetch_fx` now supplies 19 non-crypto symbols. Then
-`leg_fitness()` against N5's trades. Remember ADD, DON'T SUBTRACT — the output
-is for SIZING, not for switching legs off.
+---
 
-## Traps already paid for — do not rediscover these
+## Design decisions that are not up for casual revision
 
-1. **Do not write a backtester here.** trading-bots' `backtest.py` carries 24
-   hard rules learned by being fooled. Two engines = two rulers.
-2. **Breadth is credited as √N_eff, not linearly.** Linear crediting handed the
-   multi-asset universe 99 million trials, which is not a budget.
-3. **The allowance is capped at 1000/universe.** MinBTL inverts exponentially
-   (N ~ e^(T/2)), so 98 years of S&P bought effectively infinite permission and
-   the guard silently stopped guarding. Beyond a few hundred trials the
-   per-result DSR is the real control.
-4. **Non-crypto data is DAILY ONLY.** Yahoo caps intraday at ~730 days. The
-   live engine trades 1h/4h, so nothing here is deployable to those markets
-   without a Dukascopy tick loader. Do not pretend otherwise in a result.
-5. **COT merges on `released`, never `report_date`** — sampled Tuesday,
-   published Friday. The naive merge leaks three days.
-6. **`.astype("int64") // 10**6` on a datetime is a resolution ASSUMPTION.**
-   It silently yields seconds under pandas 3. Use `fetch_cme_basis.to_ms()`.
-   This has now caused two separate outages.
+- **No translator means NO TEST.** Measured this session: falling back to a
+  shared placeholder gave "SuperTrend PF 1.069" and "MACD+SMA 200 PF 1.069" —
+  the same number, because both rows were an SMA cross wearing someone else's
+  name. Those four results were rolled back and the ledger cleared. A parked
+  candidate is correct; a fabricated one is not.
+- **Harvested rows carry NO performance numbers.** TradingView advertises 90%
+  win rates curve-fitted to one symbol on one window. Metrics stay `None` until
+  measured here, and the UI renders `—`, never `0`.
+- **Popularity orders the work queue and nothing else.** A widely-copied edge
+  is a crowded one.
+- **Budget exhaustion stops the engine and says so** — Kristijonas' explicit
+  choice. It does not switch universes to stay busy.
+- **A failed translation is not a refuted idea.** It spends no budget and is
+  recorded as a translator failure, so it can be retried after a fix.
+
+---
+
+## Traps already paid for
+
+1. **Do not write a backtester here.** `vendor/trading-bots/scalping/
+   backtest.py` carries 24 hard rules learned by being fooled. Two engines
+   would mean two rulers.
+2. **Breadth is √N_eff, not linear.** Linear crediting handed multi-asset an
+   allowance of 99 million trials.
+3. **Allowance capped at 1000/universe.** MinBTL inverts exponentially
+   (N ~ e^(T/2)); 98 years of S&P otherwise buys infinite permission and the
+   guard silently stops guarding.
+4. **Non-crypto data is DAILY ONLY.** Yahoo caps intraday at ~730 days.
+5. **COT merges on `released`, never `report_date`.**
+6. **`.astype("int64") // 10**6` on a datetime is a resolution ASSUMPTION** —
+   silently yields seconds under pandas 3. Use `fetch_cme_basis.to_ms()`.
 7. **FRED and CFTC need OPPOSITE HTTP headers.** cftc.gov 403s without a
    browser User-Agent; fred.stlouisfed.org hangs to timeout *with* one.
-8. **A text feature needs TWO lag guards, not one.** `searchsorted(side="right")`
-   plus a further `.shift(1)`. The first stops a bar reading a score released
-   after it; the second stops the bar CONTAINING the release from acting on it.
-   Drop either and the backtest reports look-ahead as edge.
-9. **Never use plain `KFold` on trade labels.** Trade windows overlap, so
-   ordinary folds share information and cross-validated accuracy comes back
-   beautiful and fake. `PurgedSplit` exists for this.
-10. **Never fit the regime model to forward returns.** That makes it a return
-    model, and it will overfit like one. Cluster observable state only; measure
-    leg fitness per regime separately and out of sample.
+8. **A text feature needs TWO lag guards** — `searchsorted(side="right")` plus
+   a further `.shift(1)`.
+9. **Never plain `KFold` on trade labels.** Overlapping windows leak; use
+   `PurgedSplit`.
+10. **Never fit the regime model to forward returns.**
+11. **Look-ahead detection must be BEHAVIOURAL, not textual.** Proven this
+    session: a leak through a whole-series `c.max()` — no negative shift, no
+    `center=True` — was invisible to the regex scan and caught only by
+    re-running on a truncated frame (1192 vs 3488 signals over identical bars).
 
 ---
 
-## Open, unrelated to this repo
+## Open elsewhere
 
-- `trading-bots` has a stale git worktree at `.claude/worktrees/n1-deep-test`
-  (18 MB, branch `worktree-n1-deep-test`). Removal was blocked by a sandbox
-  classifier; Kristijonas has the command.
-- `bot-n5funded` went to `MAX_OPEN=4` on 2026-08-10 (was 2, real money).
-  Re-measure trades/day around 2026-08-17. Backtest says this should roughly
-  double it; the DVOL gate being off may mask the change.
-- `bot-n5` has NO concurrency cap at all — `MAX_OPEN` does not exist in
-  `bot_n5.py`. It ran 3 positions / $22.9k notional against $12.7k equity.
-  Nobody has decided whether that is intended.
+- `trading-bots`: stale worktree at `.claude/worktrees/n1-deep-test` (18 MB).
+  Removal was blocked by a sandbox classifier; Kristijonas has the command.
+- `bot-n5funded` went `MAX_OPEN` 2 → 4 on 2026-08-10 (REAL MONEY).
+  **Re-measure trades/day around 2026-08-17.** Backtest says it should roughly
+  double; the DVOL gate being off may mask it.
+- `bot-n5` has NO concurrency cap — `MAX_OPEN` does not exist in `bot_n5.py`.
+  It ran 3 positions / $22.9k notional against $12.7k equity. Nobody has
+  decided whether that is intended.
