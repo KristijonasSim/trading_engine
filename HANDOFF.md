@@ -13,7 +13,7 @@ Nothing is running. Nothing is half-finished. Both repos are pushed and clean.
 
 | repo | commit | status |
 |---|---|---|
-| `trading_engine` | pushed to `KristijonasSim/trading_engine` | 3 commits, 23/23 tests |
+| `trading_engine` | pushed to `KristijonasSim/trading_engine` | all 5 ideas built, 37/37 tests |
 | `trading-bots` (submodule at `vendor/`) | `786871a` | pushed |
 
 ```bash
@@ -30,8 +30,8 @@ years of history into a directory nothing else reads.
 
 ## What was built, and why it is shaped this way
 
-Ideas **1 (referee)** and **5 (the loop)** of a five-part plan. The other three
-are plug-ins and the engine runs without them.
+**All five ideas are built.** 1 (referee) and 5 (the loop) are the core; 2
+(feeds), 3 (meta-labeling) and 4 (regime) are plug-ins on top.
 
 The context that explains every design choice: **the predecessor engine ran
 94,658 backtests and shipped 0 legs.** That is not bad execution — on 5.1 years
@@ -45,6 +45,10 @@ of them faster. A faster engine without a budget is a worse engine.
 | `engine/hypothesis.py` | the gate — mechanism, unexploited feed, pre-stated prediction, dupe check |
 | `engine/pipeline.py` | `screen` (free) → `evaluate` (spends budget, judges the MEDIAN cell) |
 | `engine/bridge.py` | the only seam to trading-bots; forces `STOP_FILL=close` |
+| `engine/feeds.py` | idea 2 — text to numeric series, correctly lagged |
+| `engine/metalabel.py` | idea 3 — take/skip on existing legs, purged CV |
+| `engine/regime.py` | idea 4 — multi-asset regime labels |
+| `demo_fomc.py` | end-to-end on live data, spends no budget |
 
 **The test that justifies the repo:** a 200-cell search over pure noise produces
 a flattering best cell (SR/bar 0.092 — guaranteed by the maths, not bad luck)
@@ -54,38 +58,34 @@ matter what else is green.
 
 ---
 
-## Do this next: idea 2, the feed manufacturer
+## Do this next
 
-**Why this one and not the others:** it is the only remaining idea that CREATES
-information. Every real leg in trading-bots came from a new data feed; external
-idea hunts over existing data are **0-for-351**. Ideas 3 and 4 reprocess what is
-already there, so they cannot lift the ceiling — only the noise floor.
+All five ideas exist. What is missing is USE — nothing has produced a promoted
+leg yet, and that is the only output that counts.
 
-The shape: an LLM turns unstructured text into a numeric series that can be
-screened like any other feature.
+**1. Give the feed manufacturer more events.** `demo_fomc.py` runs clean and
+correctly rejects: FOMC scores show unstable IC sign across folds against
+forward DXY, GOLD and SP500. But 8 statements a year makes a step function with
+~8 distinct values per fold — the screen is underpowered whichever way it lands.
+Add ECB, BoE and BoJ statements (same `Document` shape, same fetch pattern) to
+get to ~30 events/year, and re-screen. That is the cheapest real progress
+available.
 
-- FOMC statements / minutes → hawkish-dovish score
-- ECB, BoJ, BoE statements → same, per currency
-- Exchange announcements (listings, delistings, margin changes) → event flags
-- Earnings-call tone for index constituents
+**2. Try a Claude scorer against the lexicon control.** `ClaudeScorer` is
+written and unused — it needs `pip install anthropic` and `ANTHROPIC_API_KEY`.
+The comparison is the point: if the LLM score does not beat word-counting on
+the screen, it is not adding information and should not be paid for.
 
-Then: register it as a hypothesis, `screen()` it for free against forward
-returns, and only backtest if the IC is stable across folds.
+**3. Wire meta-labeling to a REAL leg.** `metalabel.py` is tested only on
+synthetic signals. Pull actual trades from
+`vendor/trading-bots/scalping/live_parity.py::build_book("n5")`, build entry-time
+features, and run `cross_validate`. An AUC near 0.5 is a perfectly good finding
+and should be reported, not tuned away.
 
-**Constraints that will bite:**
-- The VM is 952 MB total. A local model needs ~4.5 GB. If an LLM is in the
-  loop it calls the Claude API — zero RAM, pay per call.
-- Generating more *hypotheses* faster is NOT the constraint; the trial budget
-  is. An LLM proposing 1,000 ideas a day makes the arithmetic worse unless each
-  idea arrives with new data attached. That is the whole point of this one.
-
-The other two, whenever:
-- **Idea 3, meta-labeling** — existing legs pick direction, ML only decides
-  take/skip and size. `n5_metalabel.py` is in trading-bots git history.
-- **Idea 4, regime classifier** — decides which legs run now. Would replace the
-  DVOL gate, which has been OFF for 100% of 132 checks since deploy.
-
----
+**4. Feed the regime model real multi-asset data.** `build_features()` wants a
+wide close-price frame; `fetch_fx` now supplies 19 non-crypto symbols. Then
+`leg_fitness()` against N5's trades. Remember ADD, DON'T SUBTRACT — the output
+is for SIZING, not for switching legs off.
 
 ## Traps already paid for — do not rediscover these
 
@@ -107,6 +107,16 @@ The other two, whenever:
    This has now caused two separate outages.
 7. **FRED and CFTC need OPPOSITE HTTP headers.** cftc.gov 403s without a
    browser User-Agent; fred.stlouisfed.org hangs to timeout *with* one.
+8. **A text feature needs TWO lag guards, not one.** `searchsorted(side="right")`
+   plus a further `.shift(1)`. The first stops a bar reading a score released
+   after it; the second stops the bar CONTAINING the release from acting on it.
+   Drop either and the backtest reports look-ahead as edge.
+9. **Never use plain `KFold` on trade labels.** Trade windows overlap, so
+   ordinary folds share information and cross-validated accuracy comes back
+   beautiful and fake. `PurgedSplit` exists for this.
+10. **Never fit the regime model to forward returns.** That makes it a return
+    model, and it will overfit like one. Cluster observable state only; measure
+    leg fitness per regime separately and out of sample.
 
 ---
 
