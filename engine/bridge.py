@@ -61,6 +61,14 @@ _DATA_CANDIDATES = [Path(_DATA_ENV) if _DATA_ENV else None,
 _DATA = next((p for p in _DATA_CANDIDATES if p and p.is_dir()
               and any(p.glob("*.csv"))), TRADING_BOTS / "scalping" / "data")
 
+# Falling back past an EXPLICIT setting is the one case worth shouting about:
+# the operator stated where the cache is, we disagreed, and quietly using a
+# different directory is how you end up reading bars you did not mean to.
+if _DATA_ENV and Path(_DATA_ENV).resolve() != _DATA.resolve():
+    import warnings as _w
+    _w.warn(f"TRADING_BOTS_DATA={_DATA_ENV!r} has no CSVs; falling back to "
+            f"{_DATA}", RuntimeWarning, stacklevel=2)
+
 for _p in (str(TRADING_BOTS), str(TRADING_BOTS / "scalping")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
