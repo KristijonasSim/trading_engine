@@ -84,8 +84,15 @@ register  ->  screen (FREE)  ->  evaluate (COSTS BUDGET)  ->  verdict
 
 ## Data
 
-Everything comes from `../trading-bots/scalping/data` via `bridge.py`. Do not
-duplicate the 572 MB cache.
+Everything comes from `trading-bots` via `bridge.py`. Do not duplicate the
+572 MB cache.
+
+**`bridge.py` resolves CODE and DATA separately, and they usually differ.** The
+cache is gitignored, so a vendored submodule ships the loaders WITHOUT the bars
+they read. When trading-bots is a submodule, set `TRADING_BOTS_DATA` to the
+working checkout that holds the cache — otherwise every fetch silently
+re-downloads years of history into a directory nobody else reads.
+`describe()` warns when the resolved cache is empty.
 
 | loader | covers |
 |---|---|

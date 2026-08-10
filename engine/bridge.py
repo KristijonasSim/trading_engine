@@ -26,11 +26,14 @@ from pathlib import Path
 # at call time and defaults to the optimistic setting.
 os.environ.setdefault("STOP_FILL", "close")
 
-# Resolve trading-bots: env override, then the conventional sibling location.
+# Resolve trading-bots. Vendored submodule first, then env override, then the
+# conventional sibling checkout.
 _ENV = os.environ.get("TRADING_BOTS_PATH")
-_CANDIDATES = [Path(_ENV) if _ENV else None,
+_HERE = Path(__file__).resolve().parent.parent
+_CANDIDATES = [_HERE / "vendor" / "trading-bots",
+               Path(_ENV) if _ENV else None,
                Path.home() / "trading-bots",
-               Path(__file__).resolve().parent.parent.parent / "trading-bots"]
+               _HERE.parent / "trading-bots"]
 
 TRADING_BOTS: Path | None = None
 for _c in _CANDIDATES:
@@ -44,6 +47,19 @@ if TRADING_BOTS is None:
         "this repo. This engine deliberately has no backtester of its own -- "
         "see the module docstring."
     )
+
+# CODE and DATA are resolved SEPARATELY, and they usually differ.
+#
+# The price cache is ~572 MB and gitignored, so a vendored submodule ships the
+# loaders WITHOUT the bars they read. Bind DATA to the working checkout that
+# actually holds the cache, or every fetch silently re-downloads years of
+# history into a directory nobody else looks at.
+_DATA_ENV = os.environ.get("TRADING_BOTS_DATA")
+_DATA_CANDIDATES = [Path(_DATA_ENV) if _DATA_ENV else None,
+                    TRADING_BOTS / "scalping" / "data",
+                    Path.home() / "trading-bots" / "scalping" / "data"]
+_DATA = next((p for p in _DATA_CANDIDATES if p and p.is_dir()
+              and any(p.glob("*.csv"))), TRADING_BOTS / "scalping" / "data")
 
 for _p in (str(TRADING_BOTS), str(TRADING_BOTS / "scalping")):
     if _p not in sys.path:
@@ -71,7 +87,7 @@ try:
 except ImportError:                                              # pragma: no cover
     fred_frame = cot_frame = None
 
-DATA = TRADING_BOTS / "scalping" / "data"
+DATA = _DATA
 
 # Fee regimes, matching trading-bots' conventions so numbers stay comparable.
 TAKER = 0.00055
@@ -80,8 +96,14 @@ SLIP = 0.0002
 
 
 def describe() -> str:
-    return (f"trading-bots : {TRADING_BOTS}\n"
-            f"data cache   : {DATA} ({len(list(DATA.glob('*.csv'))) if DATA.exists() else 0} files)\n"
+    n = len(list(DATA.glob("*.csv"))) if DATA.exists() else 0
+    warn = ""
+    if n == 0:
+        warn = ("\nWARNING      : data cache is EMPTY. If trading-bots is a "
+                "submodule, set TRADING_BOTS_DATA to the checkout holding the "
+                "cache -- otherwise every fetch re-downloads years of history.")
+    return (f"code         : {TRADING_BOTS}\n"
+            f"data cache   : {DATA} ({n} files)\n"
             f"STOP_FILL    : {os.environ['STOP_FILL']}\n"
             f"fx loader    : {'yes' if fetch_fx_bars else 'MISSING'}\n"
-            f"macro loader : {'yes' if fred_frame else 'MISSING'}")
+            f"macro loader : {'yes' if fred_frame else 'MISSING'}" + warn)
