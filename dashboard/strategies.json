@@ -1,5 +1,5 @@
 {
- "generated": "2026-08-10T12:50:34+00:00",
+ "generated": "2026-08-10T13:02:31+00:00",
  "sample": false,
  "strategies": [
   {
@@ -24,7 +24,7 @@
    "trials": 0,
    "score": null,
    "verdict": "pending",
-   "note": "mechanics: mean_reversion. Pine source available. collected, not yet screened \u2014 no metrics measured"
+   "note": "awaiting translation \u2014 ANTHROPIC_API_KEY not set, so the Pine logic has not been converted and NOTHING about this strategy has been measured"
   },
   {
    "id": "tv:PUB;2004",
@@ -49,7 +49,7 @@
    "trials": 0,
    "score": null,
    "verdict": "pending",
-   "note": "mechanics: momentum, trend. Pine source available. collected, not yet screened \u2014 no metrics measured"
+   "note": "awaiting translation \u2014 ANTHROPIC_API_KEY not set, so the Pine logic has not been converted and NOTHING about this strategy has been measured"
   },
   {
    "id": "tv:PUB;rcRbtoBiKGtjZq96XWjZtnEs2k2dBWaj",
@@ -75,7 +75,7 @@
    "trials": 0,
    "score": null,
    "verdict": "pending",
-   "note": "mechanics: mean_reversion, trend, volatility. Pine source available. collected, not yet screened \u2014 no metrics measured"
+   "note": "awaiting translation \u2014 ANTHROPIC_API_KEY not set, so the Pine logic has not been converted and NOTHING about this strategy has been measured"
   },
   {
    "id": "tv:PUB;jN9HBNhynFqGOf4KrVcu2d0TU9g0jvGR",
@@ -100,7 +100,7 @@
    "trials": 0,
    "score": null,
    "verdict": "pending",
-   "note": "mechanics: trend, volatility. Pine source available. collected, not yet screened \u2014 no metrics measured"
+   "note": "awaiting translation \u2014 ANTHROPIC_API_KEY not set, so the Pine logic has not been converted and NOTHING about this strategy has been measured"
   },
   {
    "id": "tv:PUB;b3d1b9c1f597491390fb5eca58097871",

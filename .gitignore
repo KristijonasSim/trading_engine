@@ -10,3 +10,6 @@ state/
 
 # harvested store is machine state; the seed is the reproducible input
 state/candidates.db
+state/translations/
+state/ledger.json
+.env
