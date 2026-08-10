@@ -35,7 +35,7 @@ import pandas as pd
 from . import bridge
 from .budget import BudgetExhausted, Ledger, deflated_sharpe
 from .harvest import CandidateStore, to_dashboard
-from .translate import Translator, verify
+from .translate import best_translator, verify
 
 STATE = Path(__file__).resolve().parent.parent / "state"
 
@@ -73,6 +73,21 @@ class PassResult:
         self.errors = self.errors or []
 
 
+PINE = STATE / "pine"
+
+
+def _pine_source(cid: str) -> str | None:
+    """Pine for a candidate id, if it has been fetched.
+
+    Sources live as files rather than in the DB: they are large, they never
+    change once published, and keeping them on disk means a translation can be
+    re-derived and diffed without touching the store.
+    """
+    safe = cid.replace(":", "_").replace(";", "_").replace("/", "_")
+    f = PINE / f"{safe}.pine"
+    return f.read_text() if f.exists() else None
+
+
 def _load_bars(sym: str, cfg: dict) -> pd.DataFrame:
     if cfg["loader"] == "crypto":
         return bridge.fetch_crypto(sym, cfg["tf"], days=int(cfg["years"] * 365))
@@ -108,9 +123,9 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
     led = ledger or Ledger(STATE / "ledger.json")
     res = PassResult()
 
-    if use_llm is None:
-        use_llm = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    translator = Translator() if use_llm else None
+    # API key if set, else headless Claude Code on the subscription, else None.
+    # None means "park it", never "test it with placeholder logic".
+    translator = best_translator() if use_llm is not False else None
 
     for cfg_name, cfg in UNIVERSES.items():
         led.universe(cfg_name, years=cfg["years"], n_eff=cfg["n_eff"])
@@ -149,8 +164,16 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
             continue
 
         try:
+            pine = _pine_source(cid)
+            if not pine:
+                st.update_result(
+                    cid, status="harvested", verdict="pending", score=None,
+                    note="awaiting Pine source — harvested metadata only, "
+                         "nothing measured")
+                res.blocked += 1
+                continue
             code = translator.translate(
-                name=row["name"], source=row.get("pine_source") or "",
+                name=row["name"], source=pine,
                 author=row.get("author") or "",
                 description=row.get("description") or "")
             res.translated += 1
@@ -270,8 +293,8 @@ def main() -> int:
           f"verify-failed {r.verify_failed} | tested {r.tested} | "
           f"promoted {r.promoted} | rejected {r.rejected}")
     if r.blocked:
-        print(f"  BLOCKED {r.blocked}: no ANTHROPIC_API_KEY, so Pine cannot be "
-              f"translated. Nothing was measured and no budget was spent.")
+        print(f"  BLOCKED {r.blocked}: no translator, or no Pine source stored "
+              f"for the candidate. Nothing was measured and no budget spent.")
     if r.exhausted:
         print(f"  BUDGET EXHAUSTED: {', '.join(r.exhausted)} — no further "
               f"verdicts are valid there without more data or a new feed")

@@ -311,6 +311,81 @@ class Translator:
         return code
 
 
+class ClaudeCLITranslator(Translator):
+    """Translate via headless Claude Code (`claude -p`) instead of the API.
+
+    Why this exists: a claude.ai subscription and API credits are billed
+    SEPARATELY, and Kristijonas already pays for the former. Headless Claude
+    Code authenticates against the subscription, so this path costs nothing
+    extra where the API path would be ~1-2 cents per strategy.
+
+    Trade-offs, both real:
+      - subscription rate limits apply, so a 790-script run must be paced
+        rather than fired off in parallel
+      - it is slower per call than the API, since a full CLI session starts up
+
+    Deployment note: this needs the `claude` binary installed AND authenticated
+    on whatever machine runs the loop. On a headless server that is a one-time
+    interactive login; if the engine ever reports every translation failing with
+    a non-zero exit, expired auth is the first thing to check.
+    """
+
+    def __init__(self, model: str = "claude-opus-5", cache_dir: Path | None = None,
+                 binary: str = "claude", timeout: int = 300):
+        super().__init__(model=model, cache_dir=cache_dir)
+        self.binary = binary
+        self.timeout = timeout
+
+    def _client_or_raise(self):                                  # not used here
+        return None
+
+    def translate(self, *, name: str, source: str, author: str = "",
+                  description: str = "") -> str:
+        import shutil
+        import subprocess
+
+        path = self.cache_dir / f"{self._key(name, source)}.py"
+        if path.exists():
+            return path.read_text()
+        if not shutil.which(self.binary):
+            raise RuntimeError(f"{self.binary!r} not on PATH")
+
+        prompt = SYSTEM + "\n\n" + USER.format(
+            name=name, author=author, description=description or "—",
+            source=source[:24000])
+        proc = subprocess.run(
+            [self.binary, "-p", prompt],
+            capture_output=True, text=True, timeout=self.timeout)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"claude -p exited {proc.returncode}: {proc.stderr[:300]}")
+        code = re.sub(r"^```(?:python)?\s*|\s*```$", "",
+                      proc.stdout.strip()).strip()
+        if "def signals" not in code:
+            raise ValueError(f"no signals() in output: {code[:200]}")
+        path.write_text(code)
+        return code
+
+
+def best_translator(cache_dir: Path | None = None) -> Translator | None:
+    """API key if present, else headless Claude Code, else None.
+
+    Returning None is meaningful and must not be papered over: the runner parks
+    the candidate rather than testing it with placeholder logic.
+    """
+    import shutil
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            t = Translator(cache_dir=cache_dir)
+            t._client_or_raise()
+            return t
+        except Exception:                                        # noqa: BLE001
+            pass
+    if shutil.which("claude"):
+        return ClaudeCLITranslator(cache_dir=cache_dir)
+    return None
+
+
 def stub_translation(mechanic: str = "trend") -> str:
     """A deterministic, honest translation used when no API key is present.
 

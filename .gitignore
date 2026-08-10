@@ -13,3 +13,4 @@ state/candidates.db
 state/translations/
 state/ledger.json
 .env
+state/pine/
