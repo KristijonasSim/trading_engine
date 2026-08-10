@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# engine state — the ledger and register are MACHINE state, not evidence.
+# Committing them would merge two PCs' trial counts into a wrong total.
+state/
+*.local.json
