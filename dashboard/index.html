@@ -1,0 +1,419 @@
+<title>Strategy Research — console</title>
+<style>
+  :root {
+    color-scheme: light dark;
+
+    --bg:        #ecebe8;
+    --surface:   #f7f6f3;
+    --surface-2: #e2e0db;
+    --line:      #d0cdc6;
+    --line-soft: #dedbd4;
+    --ink:       #1b1a18;
+    --ink-2:     #55534e;
+    --ink-3:     #86837c;
+
+    --accent:    #b4562a;
+    --accent-in: #fdf1e9;
+
+    --pass:      #2f7d5e;
+    --pass-bg:   #e2efe8;
+    --hold:      #96702a;
+    --hold-bg:   #f6ecd7;
+    --fail:      #a8443a;
+    --fail-bg:   #f6e3e0;
+
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+    --r: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #15151a;
+      --surface:   #1d1d23;
+      --surface-2: #26262e;
+      --line:      #33333d;
+      --line-soft: #2b2b34;
+      --ink:       #e9e8e4;
+      --ink-2:     #a9a7a1;
+      --ink-3:     #7b7973;
+      --accent:    #e08a5a;
+      --accent-in: #2c1d15;
+      --pass:      #63b993;
+      --pass-bg:   #16302a;
+      --hold:      #d3ab5d;
+      --hold-bg:   #322815;
+      --fail:      #dd8478;
+      --fail-bg:   #331e1c;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#ecebe8; --surface:#f7f6f3; --surface-2:#e2e0db; --line:#d0cdc6;
+    --line-soft:#dedbd4; --ink:#1b1a18; --ink-2:#55534e; --ink-3:#86837c;
+    --accent:#b4562a; --accent-in:#fdf1e9;
+    --pass:#2f7d5e; --pass-bg:#e2efe8; --hold:#96702a; --hold-bg:#f6ecd7;
+    --fail:#a8443a; --fail-bg:#f6e3e0;
+  }
+  :root[data-theme="dark"] {
+    --bg:#15151a; --surface:#1d1d23; --surface-2:#26262e; --line:#33333d;
+    --line-soft:#2b2b34; --ink:#e9e8e4; --ink-2:#a9a7a1; --ink-3:#7b7973;
+    --accent:#e08a5a; --accent-in:#2c1d15;
+    --pass:#63b993; --pass-bg:#16302a; --hold:#d3ab5d; --hold-bg:#322815;
+    --fail:#dd8478; --fail-bg:#331e1c;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 0 clamp(14px, 3vw, 30px) 80px; }
+
+  /* ---------------- masthead ---------------- */
+  header.top {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 20px;
+    padding: 26px 0 18px; border-bottom: 1px solid var(--line);
+  }
+  .title { font-size: 21px; font-weight: 640; letter-spacing: -.015em; }
+  .title span { color: var(--accent); }
+  .updated { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin-left: auto; }
+
+  .banner {
+    margin: 16px 0 0; padding: 11px 14px; border-radius: var(--r);
+    background: var(--hold-bg); border: 1px solid color-mix(in srgb, var(--hold) 34%, transparent);
+    color: var(--hold); font-size: 13px; display: flex; gap: 9px; align-items: flex-start;
+  }
+  .banner b { font-weight: 650; }
+
+  /* ---------------- summary ---------------- */
+  .stats {
+    display: grid; gap: 10px; margin: 20px 0 22px;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+  .stat {
+    background: var(--surface); border: 1px solid var(--line-soft);
+    border-radius: var(--r); padding: 13px 15px;
+  }
+  .stat .k {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .stat .v {
+    font-family: var(--mono); font-size: 27px; font-weight: 600;
+    font-variant-numeric: tabular-nums; margin-top: 3px; letter-spacing: -.02em;
+  }
+  .stat .v.pass { color: var(--pass); }
+  .stat .v.fail { color: var(--fail); }
+  .stat .sub { font-size: 11.5px; color: var(--ink-3); margin-top: 1px; }
+
+  /* ---------------- controls ---------------- */
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 12px 0 18px; border-top: 1px solid var(--line-soft);
+    position: sticky; top: 0; background: var(--bg); z-index: 5;
+  }
+  .tabs { display: flex; gap: 5px; flex-wrap: wrap; }
+  button.tab, select, input[type="search"] {
+    font: inherit; font-size: 13px; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 7px; padding: 6px 12px; cursor: pointer;
+  }
+  button.tab { font-family: var(--mono); font-size: 12px; letter-spacing: .02em; }
+  button.tab:hover { border-color: var(--ink-3); }
+  button.tab[aria-pressed="true"] {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  button.tab .n { opacity: .62; margin-left: 6px; }
+  input[type="search"] { min-width: 190px; cursor: text; }
+  select { cursor: pointer; padding-right: 8px; }
+  .spacer { margin-left: auto; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+  /* ---------------- cards ---------------- */
+  .grid {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  }
+  article.card {
+    background: var(--surface); border: 1px solid var(--line-soft);
+    border-radius: var(--r); padding: 15px 16px 13px;
+    display: flex; flex-direction: column; gap: 11px;
+    border-left: 3px solid var(--verdict, var(--ink-3));
+    transition: border-color .12s ease, transform .12s ease;
+  }
+  article.card:hover { transform: translateY(-1px); border-color: var(--line); }
+  .card.v-pass { --verdict: var(--pass); }
+  .card.v-hold { --verdict: var(--hold); }
+  .card.v-fail { --verdict: var(--fail); }
+
+  .card-head { display: flex; gap: 12px; align-items: flex-start; }
+  .card h3 { margin: 0; font-size: 15px; font-weight: 630; line-height: 1.28; letter-spacing: -.01em; }
+  .card .src { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin-top: 3px; }
+
+  .score {
+    margin-left: auto; flex: none; width: 44px; height: 44px; border-radius: 50%;
+    display: grid; place-items: center; font-family: var(--mono);
+    font-size: 15px; font-weight: 640; font-variant-numeric: tabular-nums;
+    background: conic-gradient(var(--verdict) calc(var(--pct) * 1%), var(--surface-2) 0);
+    position: relative; color: var(--ink);
+  }
+  .score::after {
+    content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--surface);
+  }
+  .score span { position: relative; z-index: 1; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em;
+    padding: 2.5px 7px; border-radius: 5px;
+    background: var(--surface-2); color: var(--ink-2); text-transform: uppercase;
+  }
+  .chip.verdict { background: var(--vbg); color: var(--verdict); font-weight: 640; }
+  .card.v-pass .chip.verdict { --vbg: var(--pass-bg); }
+  .card.v-hold .chip.verdict { --vbg: var(--hold-bg); }
+  .card.v-fail .chip.verdict { --vbg: var(--fail-bg); }
+
+  .metrics {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 9px 6px; padding-top: 10px; border-top: 1px solid var(--line-soft);
+  }
+  .m .k {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .m .v {
+    font-family: var(--mono); font-size: 14.5px; font-variant-numeric: tabular-nums;
+    margin-top: 1px; letter-spacing: -.01em;
+  }
+  .m .v.good { color: var(--pass); }
+  .m .v.bad  { color: var(--fail); }
+  .m .v.na   { color: var(--ink-3); }
+
+  .note { font-size: 12.5px; color: var(--ink-2); line-height: 1.42; }
+
+  .empty {
+    text-align: center; padding: 70px 20px; color: var(--ink-3);
+    border: 1px dashed var(--line); border-radius: var(--r);
+  }
+  footer {
+    margin-top: 34px; padding-top: 16px; border-top: 1px solid var(--line-soft);
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+    display: flex; flex-wrap: wrap; gap: 6px 18px;
+  }
+  @media (max-width: 560px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="title">Strategy Research <span>/</span> console</div>
+    <div class="updated" id="updated">—</div>
+  </header>
+
+  <div class="banner" id="banner" hidden>
+    <span>▲</span>
+    <div><b>Sample data.</b> The engine has not harvested anything yet — these rows exist to show the layout and will be replaced the moment <code>strategies.json</code> carries real results. No number below is a research finding.</div>
+  </div>
+
+  <section class="stats" id="stats"></section>
+
+  <div class="controls">
+    <div class="tabs" id="sources"></div>
+    <input type="search" id="q" placeholder="Search name or asset…" aria-label="Search strategies">
+    <div class="spacer"></div>
+    <select id="sort" aria-label="Sort by">
+      <option value="score">Sort: score</option>
+      <option value="pf">Sort: profit factor</option>
+      <option value="cagr">Sort: CAGR</option>
+      <option value="tpd">Sort: trades/day</option>
+      <option value="dd">Sort: drawdown</option>
+    </select>
+    <select id="verdict" aria-label="Filter by verdict">
+      <option value="all">All verdicts</option>
+      <option value="pass">Promoted</option>
+      <option value="hold">Watch</option>
+      <option value="fail">Rejected</option>
+    </select>
+  </div>
+
+  <section class="grid" id="grid"></section>
+  <div class="empty" id="empty" hidden>Nothing matches those filters.</div>
+
+  <footer>
+    <span id="foot-count">—</span>
+    <span>Verdicts come from the median cell + deflated Sharpe, never a headline PF.</span>
+    <span>Score is a 1–10 composite, not a return forecast.</span>
+  </footer>
+</div>
+
+<script>
+// ---------------------------------------------------------------- data contract
+// The engine writes dashboard/strategies.json with this shape. Anything missing
+// renders as "—" rather than a zero, because a blank metric and a genuinely zero
+// metric must never look the same on a research console.
+//
+// {
+//   "generated": "2026-08-10T12:00:00Z",
+//   "sample": true,                    // drop or set false once real
+//   "strategies": [{
+//      "id","name","source","asset_class","symbols",
+//      "pf","tpd","cagr","max_dd","win_rate","sharpe","dsr","trials",
+//      "score", "verdict": "pass"|"hold"|"fail", "note"
+//   }]
+// }
+const SAMPLE = {
+  generated: null,
+  sample: true,
+  strategies: [
+    {id:"tv-supertrend-hma", name:"HMA Supertrend Sniper", source:"TradingView", asset_class:"Crypto",
+     symbols:"BTC, ETH", pf:1.31, tpd:2.4, cagr:0.19, max_dd:0.22, win_rate:0.54, sharpe:0.81,
+     dsr:0.71, trials:34, score:6, verdict:"hold",
+     note:"Survives the screen; deflated Sharpe short of the 0.95 bar after 34 trials."},
+    {id:"tv-session-orb", name:"Session Opening Range Break", source:"TradingView", asset_class:"FX",
+     symbols:"EURUSD, GBPUSD", pf:1.44, tpd:1.8, cagr:0.24, max_dd:0.17, win_rate:0.49, sharpe:1.02,
+     dsr:0.96, trials:12, score:8, verdict:"pass",
+     note:"Forced-flow mechanism at session open. Clears DSR on a small search."},
+    {id:"qp-fx-carry", name:"FX Carry, G10 Ranked", source:"Quantpedia", asset_class:"FX",
+     symbols:"G10 basket", pf:1.22, tpd:0.1, cagr:0.08, max_dd:0.14, win_rate:0.58, sharpe:0.66,
+     dsr:0.93, trials:6, score:4, verdict:"fail",
+     note:"Real but 0.1 trades/day — cannot pass a challenge regardless of edge quality."},
+    {id:"tv-macd-of-rsi", name:"MACD of RSI", source:"TradingView", asset_class:"Crypto",
+     symbols:"12 majors", pf:0.97, tpd:3.1, cagr:-0.04, max_dd:0.31, win_rate:0.46, sharpe:-0.11,
+     dsr:0.04, trials:88, score:1, verdict:"fail",
+     note:"Indicator recombination on bars we already hold. No new information."},
+    {id:"qp-post-earnings-drift", name:"Post-Earnings Announcement Drift", source:"Quantpedia",
+     asset_class:"Stocks", symbols:"S&P 500", pf:1.38, tpd:0.6, cagr:0.13, max_dd:0.11,
+     win_rate:0.56, sharpe:0.94, dsr:0.97, trials:8, score:7, verdict:"hold",
+     note:"Strong and well documented, but no execution path — equities are research-only today."},
+    {id:"tv-fvg-continuation", name:"Fair Value Gap Continuation", source:"TradingView",
+     asset_class:"Crypto", symbols:"8 majors", pf:1.27, tpd:0.79, cagr:0.16, max_dd:0.19,
+     win_rate:0.53, sharpe:0.72, dsr:0.88, trials:22, score:5, verdict:"hold",
+     note:"Matches the retired upcomers_1 book. Below 1 trade/day."},
+    {id:"qp-tsmom", name:"Time-Series Momentum, 12m", source:"Quantpedia", asset_class:"Futures",
+     symbols:"24 contracts", pf:1.19, tpd:0.05, cagr:0.11, max_dd:0.24, win_rate:0.41,
+     sharpe:0.58, dsr:0.81, trials:15, score:3, verdict:"fail",
+     note:"Classic and durable, but the shape is wrong for challenge passing."},
+    {id:"tv-vwap-reversal", name:"VWAP Reversal Bands", source:"TradingView", asset_class:"Crypto",
+     symbols:"BTC", pf:null, tpd:null, cagr:null, max_dd:null, win_rate:null, sharpe:null,
+     dsr:null, trials:0, score:2, verdict:"fail",
+     note:"Rejected at the screen — IC sign flips across folds. No budget spent."}
+  ]
+};
+
+const fmt = {
+  pct: v => v == null ? null : (v * 100).toFixed(1) + "%",
+  num: (v, d=2) => v == null ? null : v.toFixed(d),
+};
+const cell = (v, cls="") => v == null
+  ? `<div class="v na">—</div>`
+  : `<div class="v ${cls}">${v}</div>`;
+
+let DATA = null, activeSource = "All";
+
+async function load() {
+  try {
+    const r = await fetch("strategies.json", {cache: "no-store"});
+    if (!r.ok) throw new Error(r.status);
+    DATA = await r.json();
+  } catch {
+    DATA = SAMPLE;          // no engine output yet
+  }
+  document.getElementById("banner").hidden = !DATA.sample;
+  document.getElementById("updated").textContent =
+    DATA.generated ? "updated " + new Date(DATA.generated).toLocaleString()
+                   : "no engine run yet";
+  renderStats(); renderSources(); render();
+}
+
+function renderStats() {
+  const s = DATA.strategies;
+  const n = s.length;
+  const pass = s.filter(x => x.verdict === "pass").length;
+  const hold = s.filter(x => x.verdict === "hold").length;
+  const fail = s.filter(x => x.verdict === "fail").length;
+  const trials = s.reduce((a, x) => a + (x.trials || 0), 0);
+  const box = (k, v, cls, sub) => `<div class="stat"><div class="k">${k}</div>
+      <div class="v ${cls}">${v}</div><div class="sub">${sub}</div></div>`;
+  document.getElementById("stats").innerHTML =
+    box("Researched", n, "", "collected and assessed") +
+    box("Promoted", pass, "pass", "cleared every gate") +
+    box("Watching", hold, "", "real but not yet promotable") +
+    box("Rejected", fail, "fail", `${n ? Math.round(fail / n * 100) : 0}% of the total`) +
+    box("Trials spent", trials, "", "against the budget");
+}
+
+function renderSources() {
+  const counts = {};
+  DATA.strategies.forEach(x => counts[x.source] = (counts[x.source] || 0) + 1);
+  const names = ["All", ...Object.keys(counts).sort()];
+  document.getElementById("sources").innerHTML = names.map(nm => {
+    const c = nm === "All" ? DATA.strategies.length : counts[nm];
+    return `<button class="tab" data-src="${nm}" aria-pressed="${nm === activeSource}">
+              ${nm}<span class="n">${c}</span></button>`;
+  }).join("");
+  document.querySelectorAll("button.tab").forEach(b =>
+    b.onclick = () => { activeSource = b.dataset.src; renderSources(); render(); });
+}
+
+function render() {
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const sortKey = document.getElementById("sort").value;
+  const vf = document.getElementById("verdict").value;
+
+  let rows = DATA.strategies.filter(x =>
+    (activeSource === "All" || x.source === activeSource) &&
+    (vf === "all" || x.verdict === vf) &&
+    (!q || (x.name + " " + x.asset_class + " " + (x.symbols || "")).toLowerCase().includes(q)));
+
+  const dir = sortKey === "dd" ? 1 : -1;      // smaller drawdown is better
+  const key = {score:"score", pf:"pf", cagr:"cagr", tpd:"tpd", dd:"max_dd"}[sortKey];
+  rows.sort((a, b) => {
+    const av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;                 // unmeasured always sinks
+    if (bv == null) return -1;
+    return (av - bv) * dir;
+  });
+
+  document.getElementById("grid").innerHTML = rows.map(card).join("");
+  document.getElementById("empty").hidden = rows.length > 0;
+  document.getElementById("foot-count").textContent =
+    `showing ${rows.length} of ${DATA.strategies.length}`;
+}
+
+function card(x) {
+  const label = {pass: "Promoted", hold: "Watch", fail: "Rejected"}[x.verdict] || "—";
+  return `<article class="card v-${x.verdict}">
+    <div class="card-head">
+      <div>
+        <h3>${x.name}</h3>
+        <div class="src">${x.source} · ${x.symbols || "—"}</div>
+      </div>
+      <div class="score" style="--pct:${(x.score || 0) * 10}"><span>${x.score ?? "—"}</span></div>
+    </div>
+    <div class="chips">
+      <span class="chip verdict">${label}</span>
+      <span class="chip">${x.asset_class}</span>
+      ${x.trials ? `<span class="chip">${x.trials} trials</span>` : ""}
+    </div>
+    <div class="metrics">
+      <div class="m"><div class="k">PF</div>
+        ${cell(fmt.num(x.pf), x.pf == null ? "" : x.pf >= 1.2 ? "good" : "bad")}</div>
+      <div class="m"><div class="k">Trades/day</div>
+        ${cell(fmt.num(x.tpd), x.tpd == null ? "" : x.tpd >= 1 ? "good" : "bad")}</div>
+      <div class="m"><div class="k">CAGR</div>
+        ${cell(fmt.pct(x.cagr), x.cagr == null ? "" : x.cagr > 0 ? "good" : "bad")}</div>
+      <div class="m"><div class="k">Max DD</div>${cell(fmt.pct(x.max_dd))}</div>
+      <div class="m"><div class="k">Win rate</div>${cell(fmt.pct(x.win_rate))}</div>
+      <div class="m"><div class="k">DSR</div>
+        ${cell(fmt.num(x.dsr), x.dsr == null ? "" : x.dsr >= 0.95 ? "good" : "bad")}</div>
+    </div>
+    ${x.note ? `<div class="note">${x.note}</div>` : ""}
+  </article>`;
+}
+
+document.getElementById("q").oninput = render;
+document.getElementById("sort").onchange = render;
+document.getElementById("verdict").onchange = render;
+load();
+</script>
