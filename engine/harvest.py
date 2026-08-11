@@ -32,6 +32,7 @@ still read the store.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from dataclasses import asdict, dataclass, field
@@ -374,7 +375,11 @@ def to_dashboard(store: CandidateStore | None = None,
     path = Path(out or Path(__file__).resolve().parent.parent
                 / "dashboard" / "strategies.json")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=1))
+    # Browser refreshes can happen while a worker finishes.  Never expose a
+    # half-written JSON document: it makes the UI fall back to sample data.
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=1))
+    os.replace(tmp, path)
     return {"written": str(path), "rows": len(rows)}
 
 

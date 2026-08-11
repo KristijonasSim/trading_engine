@@ -1385,7 +1385,9 @@ async function load() {
     if (!r.ok) throw new Error(r.status);
     DATA = await r.json();
   } catch {
-    DATA = SAMPLE;          // no engine output yet
+    // A worker may be replacing the JSON at this exact moment. Keep real data
+    // already shown instead of replacing it with the old sample dashboard.
+    DATA = DATA || SAMPLE;
   }
   document.getElementById("banner").hidden = DATA.sample !== true;
   document.getElementById("updated").textContent =
