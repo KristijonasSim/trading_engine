@@ -1,0 +1,42 @@
+[Unit]
+# One research pass: harvest -> fetch Pine -> translate -> verify -> backtest
+# -> verdict -> dashboard. Started by engine-pass.timer, not enabled directly.
+#
+# Type=oneshot on a timer, NOT a long-lived daemon. Deliberate: a crashed
+# daemon is invisible until somebody looks, whereas a failing timer leaves a
+# unit in `failed` state and a line in the journal every single firing.
+Description=trading_engine — one research pass
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/trading_engine
+
+# The price cache is 572 MB and gitignored, so it lives in the trading-bots
+# working checkout, NOT in the vendored submodule. Without this every fetch
+# silently re-downloads years of history into a directory nothing reads.
+Environment=TRADING_BOTS_DATA=%h/trading-bots/scalping/data
+Environment=PYTHONUNBUFFERED=1
+
+# How many candidates one pass TESTS. Small on purpose: each one is an LLM
+# translation plus a multi-symbol backtest, and the budget is finite anyway.
+Environment=PASS_LIMIT=4
+
+# The translator shells out to headless `claude`, which lives in ~/.local/bin
+# and is NOT on a systemd unit's default PATH.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+ExecStart=%h/trading_engine/.venv/bin/python -m engine.runner
+
+# A pass does real work: up to PASS_LIMIT LLM calls plus backtests over 98
+# years of daily bars. Generous, but bounded — a wedged pass must not block
+# the next firing forever.
+TimeoutStartSec=3600
+
+# Never restart a oneshot on failure. The next timer firing IS the retry, and
+# a restart loop would hammer TradingView and burn subscription rate limit.
+Restart=no
+
+Nice=10
+IOSchedulingClass=idle

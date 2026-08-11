@@ -1235,6 +1235,13 @@ const SAMPLE = {
 const fmt = {
   pct: v => v == null ? null : (v * 100).toFixed(1) + "%",
   num: (v, d=2) => v == null ? null : v.toFixed(d),
+  // Calendar days to +10% at 1% risk per trade. `cagr` is already "fraction of
+  // equity per year at 1% risk", so this is a unit change, not a new estimate —
+  // the same information CAGR carried, framed as the question that decides a
+  // prop challenge. A losing strategy has no deadline, so it renders "—"
+  // rather than a negative number that reads like a result.
+  days: v => (v == null || v <= 0) ? null
+             : Math.round(0.10 / v * 365.25).toLocaleString(),
 };
 const cell = (v, cls="") => v == null
   ? `<div class="v na">—</div>`
@@ -1336,8 +1343,8 @@ function card(x) {
         ${cell(fmt.num(x.pf), x.pf == null ? "" : x.pf >= 1.2 ? "good" : "bad")}</div>
       <div class="m"><div class="k">Trades/day</div>
         ${cell(fmt.num(x.tpd), x.tpd == null ? "" : x.tpd >= 1 ? "good" : "bad")}</div>
-      <div class="m"><div class="k">CAGR</div>
-        ${cell(fmt.pct(x.cagr), x.cagr == null ? "" : x.cagr > 0 ? "good" : "bad")}</div>
+      <div class="m"><div class="k">Days to +10%</div>
+        ${cell(fmt.days(x.cagr), x.cagr == null ? "" : x.cagr > 0 ? "good" : "bad")}</div>
       <div class="m"><div class="k">Max DD</div>${cell(fmt.pct(x.max_dd))}</div>
       <div class="m"><div class="k">Win rate</div>${cell(fmt.pct(x.win_rate))}</div>
       <div class="m"><div class="k">DSR</div>

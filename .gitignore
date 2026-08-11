@@ -14,3 +14,8 @@ state/translations/
 state/ledger.json
 .env
 state/pine/
+
+# generated every pass by the runner — machine output, not source
+dashboard/strategies.json
+RESULTS.md
+state/notified.json

@@ -106,7 +106,16 @@ class Candidate:
     win_rate: float | None = None
     sharpe: float | None = None
     dsr: float | None = None
+    # `trades` is the SAMPLE SIZE the verdict rests on; `trials` is what the
+    # verdict COST from the budget. Two different numbers that both have to be
+    # visible — a PF of 1.4 on 11 trades and a PF of 1.4 on 900 are not the
+    # same claim, and neither is one charged 3 trials against one charged 300.
+    trades: int = 0
     trials: int = 0
+    # How many passes have picked this row up and failed to get a result out of
+    # it. A row that keeps raising never changes status, so without a counter it
+    # sits at the head of a popularity-ordered queue and is retried forever.
+    attempts: int = 0
     score: int | None = None
     verdict: str | None = None
     note: str | None = None
@@ -118,11 +127,20 @@ CREATE TABLE IF NOT EXISTS candidates (
     description TEXT, symbol_hint TEXT, interval_hint TEXT, asset_class TEXT,
     popularity INTEGER, has_source INTEGER, mechanics TEXT, harvested TEXT,
     status TEXT, pf REAL, tpd REAL, cagr REAL, max_dd REAL, win_rate REAL,
-    sharpe REAL, dsr REAL, trials INTEGER, score INTEGER, verdict TEXT, note TEXT
+    sharpe REAL, dsr REAL, trades INTEGER, trials INTEGER, attempts INTEGER,
+    score INTEGER, verdict TEXT, note TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_source ON candidates(source);
 CREATE INDEX IF NOT EXISTS idx_status ON candidates(status);
 """
+
+# Columns added after the first store was created. `CREATE TABLE IF NOT EXISTS`
+# does nothing to an existing database, so a new field in `_SCHEMA` alone means
+# the running engine on this box keeps a table without it and every write fails.
+# Migrations are additive only: dropping or retyping a column here would discard
+# measurements that cost trial budget to produce.
+_MIGRATIONS = [("trades", "INTEGER DEFAULT 0"),
+               ("attempts", "INTEGER DEFAULT 0")]
 
 
 class CandidateStore:
@@ -132,6 +150,14 @@ class CandidateStore:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        have = {r["name"] for r in self.db.execute("PRAGMA table_info(candidates)")}
+        for col, decl in _MIGRATIONS:
+            if col not in have:
+                self.db.execute(f"ALTER TABLE candidates ADD COLUMN {col} {decl}")
+        self.db.commit()
 
     def upsert(self, c: Candidate) -> bool:
         """Insert, or refresh metadata WITHOUT clobbering measured results.
@@ -146,13 +172,35 @@ class CandidateStore:
         existing = self.db.execute(
             "SELECT status FROM candidates WHERE id=?", (c.id,)).fetchone()
         if existing:
+            # A re-harvest REFRESHES metadata; it must never DOWNGRADE it.
+            #
+            # Sources differ in what they carry: the MCP corpus knows the
+            # author's chart symbol, the public search endpoint does not. Blindly
+            # writing the new record's fields let a later, thinner harvest null
+            # out a symbol and reset asset_class to 'Unknown' -- which then got
+            # re-routed to a different market, so an already-measured result
+            # ended up filed under a universe it was never tested on. Measured
+            # 2026-08-11 on SuperTrend STRATEGY: crypto numbers, 'Stocks' label.
+            #
+            # COALESCE/NULLIF keeps whichever side actually knows something.
             self.db.execute(
-                """UPDATE candidates SET source=?, name=?, author=?, url=?,
-                   description=?, symbol_hint=?, interval_hint=?, asset_class=?,
-                   popularity=?, has_source=?, mechanics=? WHERE id=?""",
+                """UPDATE candidates SET
+                     source=?, name=?,
+                     author=COALESCE(NULLIF(?,''), author),
+                     url=COALESCE(NULLIF(?,''), url),
+                     description=COALESCE(NULLIF(?,''), description),
+                     symbol_hint=COALESCE(NULLIF(?,''), symbol_hint),
+                     interval_hint=COALESCE(NULLIF(?,''), interval_hint),
+                     asset_class=CASE WHEN ?='Unknown' THEN asset_class ELSE ? END,
+                     popularity=MAX(?, popularity),
+                     has_source=MAX(?, has_source),
+                     mechanics=CASE WHEN ?='[]' THEN mechanics ELSE ? END
+                   WHERE id=?""",
                 (d["source"], d["name"], d["author"], d["url"], d["description"],
-                 d["symbol_hint"], d["interval_hint"], d["asset_class"],
-                 d["popularity"], d["has_source"], d["mechanics"], c.id))
+                 d["symbol_hint"], d["interval_hint"],
+                 d["asset_class"], d["asset_class"],
+                 d["popularity"], d["has_source"],
+                 d["mechanics"], d["mechanics"], c.id))
             self.db.commit()
             return False
         cols = ", ".join(d)
@@ -164,7 +212,8 @@ class CandidateStore:
 
     def update_result(self, cid: str, **fields) -> None:
         allowed = {"status", "pf", "tpd", "cagr", "max_dd", "win_rate", "sharpe",
-                   "dsr", "trials", "score", "verdict", "note"}
+                   "dsr", "trades", "trials", "attempts", "score", "verdict",
+                   "note"}
         bad = set(fields) - allowed
         if bad:
             raise KeyError(f"not result fields: {bad}")
@@ -188,11 +237,20 @@ class CandidateStore:
         q = "SELECT status, COUNT(*) n FROM candidates GROUP BY status"
         return {r["status"]: r["n"] for r in self.db.execute(q)}
 
-    def queue(self, limit: int = 50) -> list[dict]:
-        """Untested candidates, most-popular first — a work order, not a ranking."""
-        rows = self.db.execute(
-            "SELECT * FROM candidates WHERE status='harvested' "
-            "ORDER BY popularity DESC LIMIT ?", (limit,)).fetchall()
+    def queue(self, limit: int | None = 50) -> list[dict]:
+        """Untested candidates, most-popular first — a work order, not a ranking.
+
+        `limit=None` returns ALL of them. The caller needs that, because being
+        workable (Pine stored) and being popular are independent, and a fixed
+        LIMIT here silently hides the ready rows that sort below it: measured
+        2026-08-11, 88 candidates had Pine but only 85 fell inside a 160-row
+        slice. That gap grows with every harvest, and the symptom is an engine
+        that reports an empty queue while sitting on hundreds of testable ideas.
+        """
+        sql = ("SELECT * FROM candidates WHERE status='harvested' "
+               "ORDER BY popularity DESC")
+        rows = (self.db.execute(sql).fetchall() if limit is None
+                else self.db.execute(sql + " LIMIT ?", (limit,)).fetchall())
         return [dict(r) for r in rows]
 
 
@@ -253,6 +311,7 @@ def to_dashboard(store: CandidateStore | None = None,
             "pf": r["pf"], "tpd": r["tpd"], "cagr": r["cagr"],
             "max_dd": r["max_dd"], "win_rate": r["win_rate"],
             "sharpe": r["sharpe"], "dsr": r["dsr"],
+            "trades": r.get("trades") or 0,
             "trials": r["trials"] or 0,
             "score": r["score"],
             "verdict": r["verdict"] or "pending",

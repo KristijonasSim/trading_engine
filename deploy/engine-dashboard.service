@@ -1,0 +1,23 @@
+[Unit]
+# Serves dashboard/ so the console is always at http://127.0.0.1:8777.
+#
+# A plain static server is enough: index.html fetches strategies.json at load,
+# and the runner rewrites that file at the end of every pass. Refreshing the
+# browser is the whole update mechanism — there is no server-side state, so
+# this process can die and restart without losing anything.
+#
+# Bound to 127.0.0.1 ON PURPOSE. It is an unauthenticated view of research in
+# progress; it has no business being reachable from the network.
+Description=trading_engine — research console on 127.0.0.1:8777
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/trading_engine/dashboard
+ExecStart=/usr/bin/python3 -m http.server 8777 --bind 127.0.0.1
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=default.target

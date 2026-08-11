@@ -1,0 +1,22 @@
+[Unit]
+Description=trading_engine — research pass every 20 minutes
+Documentation=file:%h/trading_engine/HANDOFF.md
+
+[Timer]
+# 3 minutes after boot/login, then every 20 minutes. ~72 passes/day at
+# PASS_LIMIT=4 is up to ~288 strategies/day of capacity — far more than the
+# trial budget allows, which is the correct way round: the BUDGET is what
+# stops this engine, never the clock.
+OnBootSec=3min
+OnUnitActiveSec=20min
+
+# Do not stack passes. If a pass overruns its 20 minutes the next firing waits
+# rather than starting a second one against the same SQLite store.
+AccuracySec=30s
+
+# Catch up after the laptop has been asleep, but only once — not once per
+# missed interval.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -353,8 +353,12 @@ class ClaudeCLITranslator(Translator):
         prompt = SYSTEM + "\n\n" + USER.format(
             name=name, author=author, description=description or "—",
             source=source[:24000])
+        # --model is passed explicitly because the cache key includes it. Left
+        # off, the key claims a model the CLI may not have used, and the
+        # "same Pine always yields the same Python" guarantee quietly becomes
+        # "same Pine yields whatever the CLI default was that week".
         proc = subprocess.run(
-            [self.binary, "-p", prompt],
+            [self.binary, "-p", prompt, "--model", self.model],
             capture_output=True, text=True, timeout=self.timeout)
         if proc.returncode != 0:
             raise RuntimeError(
