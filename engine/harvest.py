@@ -32,6 +32,7 @@ still read the store.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -378,9 +379,20 @@ def to_dashboard(store: CandidateStore | None = None,
     # Browser refreshes can happen while a worker finishes.  Never expose a
     # half-written JSON document: it makes the UI fall back to sample data.
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=1))
+    tmp.write_text(json.dumps(_json_safe(payload), indent=1, allow_nan=False))
     os.replace(tmp, path)
     return {"written": str(path), "rows": len(rows)}
+
+
+def _json_safe(value):
+    """Make strict browser JSON; Python's Infinity is not valid JSON there."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def _pending_note(r: dict) -> str:
