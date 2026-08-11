@@ -437,6 +437,7 @@ def _work_queue(st: CandidateStore, limit: int | None = None, translator=None) -
         score += sum({"structure": 28.0, "volume": 24.0, "breakout": 20.0,
                       "mean_reversion": 16.0, "momentum": 14.0,
                       "trend": 10.0, "volatility": 8.0}.get(x, 0.0) for x in t)
+        score += 4.0 * (row.get("source_quality") or 1)
         if "grid_martingale" in t:
             score -= 200.0
         score -= 12.0 * sum(tested_by_tag.get(x, 0) for x in t)

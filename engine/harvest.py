@@ -81,6 +81,15 @@ def tag_mechanics(*texts: str | None) -> list[str]:
     return sorted(k for k, pat in _MECHANIC_TAGS.items() if re.search(pat, blob))
 
 
+def source_quality(popularity: int, has_source: bool, mechanics: list[str]) -> int:
+    """Simple intake quality, not a performance prediction (1–10)."""
+    score = 2 + int(bool(has_source)) * 3 + min(len(set(mechanics)), 3)
+    score += min(int(math.log10(max(popularity, 1))), 2)
+    if "grid_martingale" in mechanics:
+        score -= 4
+    return max(1, min(score, 10))
+
+
 @dataclass
 class Candidate:
     """One harvested idea. Performance fields stay None until WE measure them."""
@@ -94,6 +103,7 @@ class Candidate:
     interval_hint: str | None = None
     asset_class: str = "Unknown"
     popularity: int = 0
+    source_quality: int = 1
     has_source: bool = False
     mechanics: list[str] = field(default_factory=list)
     harvested: str = field(
@@ -145,7 +155,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS candidates (
     id TEXT PRIMARY KEY, source TEXT, name TEXT, author TEXT, url TEXT,
     description TEXT, symbol_hint TEXT, interval_hint TEXT, asset_class TEXT,
-    popularity INTEGER, has_source INTEGER, mechanics TEXT, harvested TEXT,
+    popularity INTEGER, source_quality INTEGER DEFAULT 1, has_source INTEGER, mechanics TEXT, harvested TEXT,
     status TEXT, pf REAL, tpd REAL, cagr REAL, max_dd REAL, win_rate REAL,
     sharpe REAL, dsr REAL, trades INTEGER, trials INTEGER, attempts INTEGER,
     score INTEGER, verdict TEXT, note TEXT, implementation_attempts INTEGER DEFAULT 0,
@@ -172,6 +182,7 @@ _MIGRATIONS = [("trades", "INTEGER DEFAULT 0"),
                ("robustness", "TEXT"),
                ("duplicate_of", "TEXT")]
 _MIGRATIONS.append(("audit", "TEXT"))
+_MIGRATIONS.append(("source_quality", "INTEGER DEFAULT 1"))
 
 
 class CandidateStore:
@@ -224,13 +235,14 @@ class CandidateStore:
                      interval_hint=COALESCE(NULLIF(?,''), interval_hint),
                      asset_class=CASE WHEN ?='Unknown' THEN asset_class ELSE ? END,
                      popularity=MAX(?, popularity),
+                     source_quality=MAX(?, source_quality),
                      has_source=MAX(?, has_source),
                      mechanics=CASE WHEN ?='[]' THEN mechanics ELSE ? END
                    WHERE id=?""",
                 (d["source"], d["name"], d["author"], d["url"], d["description"],
                  d["symbol_hint"], d["interval_hint"],
                  d["asset_class"], d["asset_class"],
-                 d["popularity"], d["has_source"],
+                 d["popularity"], d["source_quality"], d["has_source"],
                  d["mechanics"], d["mechanics"], c.id))
             self.db.commit()
             return False
@@ -324,6 +336,8 @@ def ingest_records(records: list[dict], source: str = "TradingView",
             interval_hint=r.get("interval"),
             asset_class=classify_asset(sym),
             popularity=int(r.get("likes") or 0),
+            source_quality=source_quality(int(r.get("likes") or 0), bool(r.get("has_source")),
+                                          tag_mechanics(r.get("name"), r.get("description_snippet"))),
             has_source=bool(r.get("has_source")),
             mechanics=tag_mechanics(r.get("name"), r.get("description_snippet")),
         )
@@ -355,6 +369,7 @@ def to_dashboard(store: CandidateStore | None = None,
             "mechanics": r["mechanics"],
             "has_source": r["has_source"],
             "popularity": r["popularity"],
+            "source_quality": r.get("source_quality") or 1,
             "pf": r["pf"], "tpd": r["tpd"], "cagr": r["cagr"],
             "max_dd": r["max_dd"], "win_rate": r["win_rate"],
             "sharpe": r["sharpe"], "dsr": r["dsr"],

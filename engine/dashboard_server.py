@@ -16,7 +16,7 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(DASHBOARD), **kwargs)
 
     def do_POST(self):  # noqa: N802
-        if self.path != "/api/retry-implementation":
+        if self.path not in ("/api/retry-implementation", "/api/hide"):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -24,11 +24,17 @@ class Handler(SimpleHTTPRequestHandler):
             cid = str(json.loads(self.rfile.read(size)).get("id", ""))
             st = CandidateStore()
             row = next((r for r in st.all() if r["id"] == cid), None)
-            if not row or row["status"] not in ("blocked", "implementing"):
-                raise ValueError("strategy is not parked for implementation")
-            st.update_result(cid, status="blocked", verdict="blocked", implementation_attempts=0,
-                             note="manual implementation retry requested")
-            st.append_audit(cid, "manual retry requested")
+            if not row:
+                raise ValueError("strategy not found")
+            if self.path == "/api/hide":
+                st.update_result(cid, status="archived", verdict="archived", note="hidden by user")
+                st.append_audit(cid, "hidden by user")
+            else:
+                if row["status"] not in ("blocked", "implementing"):
+                    raise ValueError("strategy is not parked for implementation")
+                st.update_result(cid, status="blocked", verdict="blocked", implementation_attempts=0,
+                                 note="manual implementation retry requested")
+                st.append_audit(cid, "manual retry requested")
             to_dashboard(st)
             body = b'{"ok":true}'
             self.send_response(HTTPStatus.OK)

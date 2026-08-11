@@ -34,6 +34,18 @@ even though the best cell always looks good. That test is in
 
 See `CLAUDE.md` for the rules.
 
+## Quantpedia import
+
+The engine does not scrape licensed Quantpedia content. Export records you are
+allowed to use as CSV or JSON, then import them with:
+
+```bash
+python -c "from engine.sources.quantpedia import import_file; print(import_file('quantpedia-export.csv'))"
+```
+
+Imported records stay as research references until their rules/source can be
+implemented and verified.
+
 ## Promotion ladder
 
 Research results do not automatically receive live capital.  The additive

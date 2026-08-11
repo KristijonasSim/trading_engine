@@ -97,6 +97,12 @@ TERMS = [
     "heikin ashi", "renko", "parabolic sar", "adx",
     "divergence", "fibonacci", "harmonic", "elliott",
     "range filter", "chandelier", "hull", "kalman",
+    "relative strength", "pairs trading", "cointegration", "statistical arbitrage",
+    "trend pullback", "breakout retest", "volatility breakout", "volume breakout",
+    "gap strategy", "seasonality", "market profile", "anchored vwap",
+    "rsi divergence", "macd divergence", "supply demand", "liquidity sweep",
+    "nadaraya watson", "linear regression", "adaptive moving average", "vortex",
+    "cmo", "williams r", "rate of change", "relative volume",
 ]
 
 _CRYPTO_WORDS = re.compile(

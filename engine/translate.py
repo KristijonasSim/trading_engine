@@ -69,7 +69,7 @@ def _translation_lock(cache_dir: Path):
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
 
-SYSTEM = """You translate TradingView Pine Script into Python signal functions.
+SYSTEM = """You translate TradingView Pine Script (versions 2 through 6) into Python signal functions.
 
 You are TRANSLATING, not designing. Reproduce the logic that is there. Do not
 add filters, do not "improve" the entry, do not substitute a better indicator.

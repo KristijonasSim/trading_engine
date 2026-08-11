@@ -267,6 +267,7 @@
   .scenario-list .fail { color: var(--fail); }
   .retry { border:1px solid var(--line); border-radius:5px; background:var(--surface-2); color:var(--ink); cursor:pointer; font:11px var(--mono); padding:5px 7px; }
   .retry:hover { border-color:var(--accent); color:var(--accent); }
+  .hide { color:var(--ink-3); }
 
   .empty {
     text-align: center; padding: 70px 20px; color: var(--ink-3);
@@ -298,6 +299,7 @@
 
   <div class="controls">
     <div class="tabs" id="sources"></div>
+    <button class="tab" id="top20" type="button" aria-pressed="false">Top 20 next</button>
     <input type="search" id="q" placeholder="Search name or asset…" aria-label="Search strategies">
     <div class="spacer"></div>
     <select id="sort" aria-label="Sort by">
@@ -331,6 +333,7 @@
       <option value="thin">Thin sample: under 30</option>
       <option value="thin-pf">High PF, thin sample</option>
       <option value="best">Best candidates</option>
+      <option value="close">Close to passing</option>
     </select>
     <select id="reason" aria-label="Filter by rejection reason">
       <option value="all" selected>All reasons</option>
@@ -1354,7 +1357,7 @@ const cell = (v, cls="") => v == null
 const esc = s => String(s ?? "").replace(/[&<>"]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
-let DATA = null, activeSource = "All";
+let DATA = null, activeSource = "All", topOnly = false;
 let refreshTimer = null, nextRefreshMs = 20_000;
 let refreshAt = 0;
 
@@ -1475,6 +1478,8 @@ function render() {
     if (bv == null) return -1;
     return (av - bv) * dir;
   });
+  if (topOnly) rows = rows.filter(x => x.verdict === "pending" && x.has_source)
+    .sort((a,b) => (b.source_quality||1)-(a.source_quality||1) || (b.popularity||0)-(a.popularity||0)).slice(0,20);
 
   document.getElementById("grid").innerHTML = rows.map(card).join("");
   document.getElementById("empty").hidden = rows.length > 0;
@@ -1499,6 +1504,7 @@ function matchesSample(x, wanted) {
   if (wanted === "thin") return x.pf != null && n < 30;
   if (wanted === "thin-pf") return x.pf >= 1.2 && n < 30;
   if (wanted === "best") return x.pf >= 1.2 && x.tpd >= .4 && x.max_dd <= .25 && n >= 100 && x.robustness?.stable;
+  if (wanted === "close") return x.pf >= 1.15 && n >= 30 && (x.max_dd <= .25 || x.tpd >= .4) && x.verdict !== "pass";
   return n >= Number(wanted);
 }
 function matchesReason(x, wanted) {
@@ -1558,6 +1564,7 @@ function card(x) {
     <div class="chips">
       <span class="chip verdict">${label}</span>
       <span class="chip asset-${asset}">${esc(x.asset_class)}</span>
+      <span class="chip">source ${x.source_quality || 1}/10</span>
       ${x.test_timeframe ? `<span class="chip">${esc(style === "day" ? "day trading" : style)} · ${esc(x.test_timeframe)}</span>` : ""}
       ${x.verdict === "pending" && x.implementation_attempts > 0 ? `<span class="chip robust">implemented</span>` : ""}
       ${measured && x.trials ? `<span class="chip">${x.trials} trials</span>` : ""}
@@ -1576,6 +1583,7 @@ function card(x) {
     ${matrix ? `<details class="matrix"><summary>View all tested scenarios</summary><div class="scenario-list">${matrix}</div></details>` : ""}
     ${audit ? `<details class="matrix"><summary>Audit trail</summary><div class="scenario-list">${audit}</div></details>` : ""}
     ${x.verdict === "blocked" ? `<button class="retry" data-retry="${esc(x.id)}">Retry implementation</button>` : ""}
+    ${x.verdict !== "archived" ? `<button class="retry hide" data-hide="${esc(x.id)}">Hide</button>` : ""}
   </article>`;
 }
 
@@ -1585,14 +1593,16 @@ document.getElementById("verdict").onchange = render;
 document.getElementById("style").onchange = render;
 document.getElementById("sample").onchange = render;
 document.getElementById("reason").onchange = render;
+document.getElementById("top20").onclick = event => { topOnly=!topOnly; event.currentTarget.setAttribute("aria-pressed", topOnly); render(); };
 document.getElementById("refresh-now").onclick = async () => {
   await load(); nextRefreshMs = 20_000; scheduleRefresh();
 };
 document.getElementById("grid").onclick = async event => {
   const id = event.target.dataset.retry;
-  if (!id) return;
+  const hide = event.target.dataset.hide;
+  if (!id && !hide) return;
   event.target.disabled = true; event.target.textContent = "Queued";
-  try { await fetch("/api/retry-implementation", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id})}); await load(); }
+  try { await fetch(id ? "/api/retry-implementation" : "/api/hide", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id:id||hide})}); await load(); }
   catch { event.target.textContent = "Retry failed"; }
 };
 document.addEventListener("pointerdown", userInteracted, {passive: true});
