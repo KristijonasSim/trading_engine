@@ -274,6 +274,15 @@ class Ledger:
         if name not in self.budgets:
             self.budgets[name] = Budget(name=name, years=years, n_eff=n_eff)
             self.save()
+        else:
+            # A shorter current data window must immediately tighten the
+            # allowance.  Never preserve an older, longer-history budget after
+            # the research policy narrows the admissible sample.
+            b = self.budgets[name]
+            if years < b.years:
+                b.years = years
+                b.n_eff = min(b.n_eff, n_eff)
+                self.save()
         return self.budgets[name]
 
     def spend(self, universe: str, hypothesis_id: str, cells: int,

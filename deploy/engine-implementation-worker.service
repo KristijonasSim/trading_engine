@@ -1,0 +1,19 @@
+[Unit]
+Description=trading_engine — independent Pine implementation worker
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kris/trading_engine
+Environment=TRADING_BOTS_DATA=/home/kris/trading-bots/scalping/data
+Environment=IMPLEMENTATION_INTERVAL=30
+Environment=IMPLEMENTATION_MAX_ATTEMPTS=3
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/kris/.local/bin:/home/kris/trading_engine/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/kris/trading_engine/.venv/bin/python -m engine.implementation_worker
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=default.target

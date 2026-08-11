@@ -1,0 +1,31 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strategy Research — live activity</title>
+<style>
+  :root { color-scheme: light dark; --bg:#15151a; --surface:#1d1d23; --line:#33333d; --ink:#e9e8e4; --muted:#a9a7a1; --accent:#e08a5a; --good:#63b993; --bad:#dd8478; --mono:ui-monospace,SFMono-Regular,Menlo,monospace; --sans:ui-sans-serif,system-ui,sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px var(--sans); }
+  main { max-width:900px; margin:auto; padding:36px 24px; } h1 { font-size:21px; margin:0; } a { color:var(--accent); text-decoration:none; font:12px var(--mono); }
+  .top { display:flex; align-items:baseline; justify-content:space-between; border-bottom:1px solid var(--line); padding-bottom:18px; }
+  .card { margin-top:20px; border:1px solid var(--line); border-radius:10px; padding:20px; background:var(--surface); } .k { color:var(--muted); font:11px var(--mono); text-transform:uppercase; letter-spacing:.08em; } .v { font-size:19px; margin-top:6px; } .good{color:var(--good)} .bad{color:var(--bad)} .muted{color:var(--muted)}
+  dl { display:grid; grid-template-columns:max-content 1fr; gap:10px 18px; margin:20px 0 0; } dt { color:var(--muted); font:12px var(--mono); } dd { margin:0; } #empty { color:var(--muted); }
+</style>
+<main>
+  <div class="top"><h1>Research activity</h1><a href="index.html">← research console</a></div>
+  <section class="card"><div class="k">Engine status</div><div class="v" id="status">Loading…</div><dl id="detail"></dl></section>
+  <p class="muted" id="empty">This page refreshes every 5 seconds while a pass is running.</p>
+</main>
+<script>
+const esc = s => String(s ?? "—").replace(/[&<>\"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+async function load(){
+  try { const r=await fetch("activity.json",{cache:"no-store"}); if(!r.ok) throw 0; const x=await r.json();
+    const cls=x.status==="running"?"good":x.status==="error"?"bad":"";
+    document.getElementById("status").innerHTML=`<span class="${cls}">${esc(x.status)}</span>`;
+    const pairs=[];
+    if(x.current) pairs.push([x.current.stage==="last completed" ? "Last completed" : "Current strategy",x.current.name],["Universe",x.current.asset_class],["Stage",x.current.stage],["Progress",`${x.current.number}/${x.current.total}`]);
+    if(x.summary) pairs.push(["Last pass",`${x.summary.tested} tested · ${x.summary.rejected} rejected · ${x.summary.promoted} promoted`],["Finished",x.summary.finished]);
+    if(x.started) pairs.push(["Started",x.started]); if(x.error) pairs.push(["Error",x.error]);
+    document.getElementById("detail").innerHTML=pairs.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+  } catch { document.getElementById("status").textContent="Waiting for the first research pass"; }
+}
+load(); setInterval(load,5000);
+</script>

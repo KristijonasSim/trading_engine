@@ -264,20 +264,37 @@ def write_results(store, ledger, res=None, path: Path | None = None) -> Path:
           "probability the edge survives having been cherry-picked out of the "
           "trials already spent in that universe.",
           "",
-          "| # | strategy | universe | trades | PF | win | tpd | d→+10% | DSR | "
-          "score | verdict |",
-          "|---|---|---|---|---|---|---|---|---|---|---|"]
+          "| # | strategy | universe | period tested | trades | PF | win | tpd | "
+          "d→+10% | DSR | score | verdict |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for i, r in enumerate(tested, 1):
         d10 = days_to_10pct(r["cagr"])
         win = "—" if r["win_rate"] is None else f"{r['win_rate'] * 100:.1f}%"
+        span = ("—" if not r.get("tested_from") else
+                f"{r['tested_from']} → {r['tested_to']} ({r.get('years')}y)")
         L.append(
-            f"| {i} | {r['name'][:44]} | {r['asset_class']} | "
+            f"| {i} | {r['name'][:44]} | {r['asset_class']} | {span} | "
             f"{r.get('trades') or '—'} | {_fmt(r['pf'])} | {win} | "
             f"{_fmt(r['tpd'], 3)} | {'—' if d10 is None else format(d10, ',.0f')} | "
             f"{_fmt(r['dsr'], 2)} | {r['score'] or '—'}/10 | "
             f"**{r['verdict'] or 'pending'}** |")
     if not tested:
-        L.append("| — | *nothing measured yet* | | | | | | | | | |")
+        L.append("| — | *nothing measured yet* | | | | | | | | | | |")
+
+    # ---- the same results in words. The table answers "how did it score"; this
+    # answers "what is actually wrong with it", which is the question you have
+    # when deciding whether an idea is worth another look.
+    scored = [r for r in tested if r.get("points")]
+    if scored:
+        L += ["", "## What is good and what is bad, per strategy", ""]
+        for r in scored[:12]:
+            L += [f"**{r['name']}** — {r['asset_class']}, {r.get('years')} years "
+                  f"({r.get('tested_from')} → {r.get('tested_to')})", ""]
+            L.append(f"*{r['note']}*")
+            L.append("")
+            for p in r["points"]:
+                L.append(f"- {'✅' if p['ok'] else '❌'} {p['text']}")
+            L.append("")
 
     # ---- budget. The number that makes every row above mean anything.
     L += ["",

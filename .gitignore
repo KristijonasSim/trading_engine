@@ -17,5 +17,8 @@ state/pine/
 
 # generated every pass by the runner — machine output, not source
 dashboard/strategies.json
+dashboard/activity.json
+dashboard/implementation-activity.json
+dashboard/history.json
 RESULTS.md
 state/notified.json

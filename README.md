@@ -33,3 +33,11 @@ even though the best cell always looks good. That test is in
 `tests/test_engine.py` and is the reason the repo exists.
 
 See `CLAUDE.md` for the rules.
+
+## Promotion ladder
+
+Research results do not automatically receive live capital.  The additive
+`engine.promotion` workflow records locked hypotheses and validation evidence,
+then permits only `research -> paper -> live_small -> scaled`; a pause always
+emits zero risk.  See [PROMOTION.md](PROMOTION.md) and run
+`python -m engine.promotion --help`.

@@ -28,8 +28,11 @@ The dashboard shows the exhausted universe so it cannot pass unnoticed.
 from __future__ import annotations
 
 import json
+import math
 import os
+import sys
 import traceback
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +43,7 @@ import pandas as pd
 from . import bridge, report
 from .budget import BudgetExhausted, Ledger, deflated_sharpe
 from .harvest import CandidateStore, to_dashboard
+from .robustness import COSTS, assess, cost_dict, stress_cost
 from .translate import best_translator, verify
 
 STATE = Path(__file__).resolve().parent.parent / "state"
@@ -65,16 +69,16 @@ STATE = Path(__file__).resolve().parent.parent / "state"
 # writes the Dukascopy tick loader.
 UNIVERSES = {
     "Crypto":  dict(symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"], tf="4h",
-                    years=5.1, n_eff=2.06, loader="crypto",
-                    min_tpd=1.0, deployable=True),
+                    years=5.0, n_eff=2.06, loader="crypto",
+                    min_tpd=0.4, deployable=True),
     "FX":      dict(symbols=["EURUSD", "GBPUSD", "USDJPY"], tf="1d",
-                    years=20.0, n_eff=3.77, loader="fx",
+                    years=5.0, n_eff=3.77, loader="fx",
                     min_tpd=0.15, deployable=False),
     "Stocks":  dict(symbols=["SP500", "NASDAQ100"], tf="1d",
-                    years=25.0, n_eff=6.39, loader="fx",
+                    years=5.0, n_eff=6.39, loader="fx",
                     min_tpd=0.15, deployable=False),
     "Futures": dict(symbols=["GOLD", "OIL"], tf="1d",
-                    years=20.0, n_eff=6.39, loader="fx",
+                    years=5.0, n_eff=6.39, loader="fx",
                     min_tpd=0.15, deployable=False),
 }
 
@@ -83,6 +87,11 @@ BARS_PER_YEAR = {"4h": 2190, "1h": 8760, "1d": 252, "30m": 17520}
 # Passes a single candidate may fail to produce a testable translation before it
 # is parked. See the retry cap in run_pass().
 MAX_ATTEMPTS = 3
+
+# Harvest only when fewer than this many workable candidates are queued. See the
+# demand-driven harvest in run_pass(). ~15 passes of work at PASS_LIMIT=4, so
+# the queue is refilled well before it can run dry.
+HARVEST_FLOOR = int(os.environ.get("HARVEST_FLOOR", "60"))
 
 
 @dataclass
@@ -98,6 +107,7 @@ class PassResult:
     exhausted: list[str] = None
     errors: list[str] = None
     notified: list[str] = None
+    backlog: int = 0            # workable candidates queued after this pass
 
     def __post_init__(self):
         self.exhausted = self.exhausted or []
@@ -139,12 +149,34 @@ def _pine_source(cid: str) -> str | None:
     return f.read_text() if f.exists() else None
 
 
+def _implementation(row: dict) -> str | None:
+    """Exact executable source for a row, regardless of where the idea came from."""
+    if row.get("source") == "Invented":
+        from .invent import source
+        return source(row["id"])
+    return _pine_source(row["id"])
+
+
 def _load_bars(sym: str, cfg: dict) -> pd.DataFrame:
     if cfg["loader"] == "crypto":
-        return bridge.fetch_crypto(sym, cfg["tf"], days=int(cfg["years"] * 365))
-    if bridge.fetch_fx_bars is None:
-        raise RuntimeError("fetch_fx unavailable")
-    return bridge.fetch_fx_bars(sym, cfg["tf"])
+        df = bridge.fetch_crypto(sym, cfg["tf"], days=int(cfg["years"] * 365.25))
+    else:
+        if bridge.fetch_fx_bars is None:
+            raise RuntimeError("fetch_fx unavailable")
+        df = bridge.fetch_fx_bars(sym, cfg["tf"])
+
+    # `start` is epoch MILLISECONDS in both loaders.  Pandas otherwise reads a
+    # bare int as nanoseconds, turning 2026 into 1970 and corrupting every
+    # annualized statistic.  Keep a rolling, recent-only window by policy: old
+    # data must never make an edge look more certain than it is today.
+    stamps = pd.to_datetime(df["start"], unit="ms", utc=True, errors="coerce")
+    if stamps.isna().any():
+        raise RuntimeError(f"{sym}: invalid bar timestamps")
+    cutoff = stamps.max() - pd.Timedelta(days=cfg["years"] * 365.25)
+    out = df.loc[stamps >= cutoff].copy().reset_index(drop=True)
+    if len(out) < 100:
+        raise RuntimeError(f"{sym}: only {len(out)} bars inside {cfg['years']}y window")
+    return out
 
 
 def _score(pf, tpd, dsr, dd) -> int:
@@ -167,7 +199,179 @@ def _score(pf, tpd, dsr, dd) -> int:
     return int(round(min(max(s, 1), 10)))
 
 
-def _work_queue(st: CandidateStore, limit: int) -> list[dict]:
+def _backtest(code: str, cfg: dict, *, cost=None, holdout: bool = False):
+    """Run a translation across a universe. Returns (cells, bar_from, bar_to).
+
+    Pooled across every symbol with ZERO admission -- trading-bots HARD RULE 3.
+    A per-symbol PF is not evidence; the pooled number over all symbols is.
+    """
+    cells: dict[str, pd.Series] = {}
+    bar_from = bar_to = None
+    fn_ns: dict = {}
+    exec(compile(code, "<t>", "exec"), fn_ns)                    # noqa: S102
+    fn = fn_ns["signals"]
+    for sym in cfg["symbols"]:
+        df = _load_bars(sym, cfg)
+        if holdout:
+            # Final 40% is never used to decide which hypothesis to create.
+            # It is a chronological hold-out, not a shuffled train/test split.
+            df = df.iloc[int(len(df) * 0.60):].reset_index(drop=True)
+        # The DATA window, not the trade span. A strategy that stops trading
+        # after year two still occupied the account for all five -- measuring
+        # frequency over the trades' own span flatters exactly the sporadic
+        # strategies this corpus is full of.
+        lo = pd.to_datetime(df["start"].iloc[0], unit="ms", utc=True)
+        hi = pd.to_datetime(df["start"].iloc[-1], unit="ms", utc=True)
+        bar_from = lo if bar_from is None else min(bar_from, lo)
+        bar_to = hi if bar_to is None else max(bar_to, hi)
+        execution = cost or COSTS.get(cfg.get("asset", "Crypto"), COSTS["Crypto"])
+        trades = bridge.run_backtest(
+            df, fn(df.copy()), fee=execution.fee, slippage=execution.slippage,
+            rr=2.0, max_hold=40, cooldown=1)
+        r = [x.pnl_r for x in trades]
+        if r:
+            cells[sym] = pd.Series(r)
+    return cells, bar_from, bar_to
+
+
+def _scenario(cells: dict, name: str, *, available: bool = True, detail: str = "") -> dict:
+    if not available or not cells:
+        return {"name": name, "available": False, "detail": detail or "no trades/data"}
+    rs = np.concatenate([c.values for c in cells.values()])
+    gains, losses = rs[rs > 0].sum(), -rs[rs < 0].sum()
+    return {"name": name, "available": True,
+            "pf": round(float(gains / losses) if losses > 0 else float("inf"), 3),
+            "max_dd": round(float((np.maximum.accumulate(np.cumsum(rs)) - np.cumsum(rs)).max() /
+                                      max(abs(np.cumsum(rs)).max(), 1)), 4),
+            "trades": int(len(rs)), "symbols": len(cells), "detail": detail}
+
+
+def _judge(cells, bar_from, bar_to, cfg, asset, spent, robustness=None) -> dict:
+    """Turn pooled trades into the row's stored verdict. ONE definition.
+
+    Both the normal pass and `--recheck` come through here. When the metric
+    definitions changed (trades/day moved from the trade span to the data
+    window) a second copy would have left half the table on the old ruler and
+    half on the new, in the same sort order, with nothing to say which was
+    which.
+    """
+    rs = np.concatenate([c.values for c in cells.values()])
+    gains, losses = rs[rs > 0].sum(), -rs[rs < 0].sum()
+    pf = float(gains / losses) if losses > 0 else float("inf")
+    win = float((rs > 0).mean())
+    span_days = max((bar_to - bar_from).days, 1)
+    years = span_days / 365.25
+    tpd = len(rs) / span_days
+
+    sr_bar = float(rs.mean() / rs.std()) if rs.std() > 0 else 0.0
+    sharpe = sr_bar * np.sqrt(BARS_PER_YEAR.get(cfg["tf"], 252))
+    dsr = deflated_sharpe(sr_bar, n_trials=max(spent, 1), n_obs=len(rs))
+
+    eq = np.cumsum(rs)
+    dd = float((np.maximum.accumulate(eq) - eq).max() / max(abs(eq).max(), 1))
+    cagr = float(rs.sum() * 0.01 / years)                        # R at 1% risk
+
+    robust = robustness or {"stable": False, "coverage": 0}
+    promote = (dsr >= 0.95 and pf >= 1.2 and tpd >= cfg.get("min_tpd", 1.0)
+               and robust["stable"])
+    verdict = "pass" if promote else ("hold" if pf >= 1.2 or dsr >= 0.9 else "fail")
+    pts = _points(pf, tpd, dsr, dd, win, cagr, len(rs), years, len(cells),
+                  spent, asset, cfg)
+    if robust["coverage"]:
+        pts.append({"ok": bool(robust["stable"]),
+                    "text": f"robustness: {robust['passed']}/{robust['coverage']} scenario checks pass"
+                            + (" — stable across costs/timeframes" if robust["stable"]
+                               else " — not stable enough to promote")})
+    return dict(
+        status="promoted" if promote else "tested",
+        pf=round(pf, 3), tpd=round(tpd, 3), cagr=round(cagr, 4),
+        max_dd=round(dd, 4), win_rate=round(win, 4), sharpe=round(sharpe, 3),
+        dsr=round(dsr, 4), trades=len(rs), score=_score(pf, tpd, dsr, dd),
+        verdict=verdict, note=_headline(pts, promote),
+        tested_from=bar_from.date().isoformat(),
+        tested_to=bar_to.date().isoformat(),
+        years=round(years, 2), test_timeframe=cfg["tf"], points=json.dumps(pts),
+        robustness=json.dumps(robust))
+
+
+def _points(pf, tpd, dsr, dd, win, cagr, n, years, n_syms, spent, asset,
+            cfg) -> list[dict]:
+    """The result as plain-language findings: what is good, what is bad.
+
+    This replaced a single dense sentence ("tested on 3 symbols, 25 trades, 4h
+    bars. DSR 0.22 after 12 trials in Crypto. Gate: PF>=1.2, DSR>=0.95,
+    tpd>=1."). Every fact in it was true and none of it could be SKIMMED — you
+    had to already know what DSR was and what the gate meant to learn anything.
+    A console that has to be read closely does not get read, and the whole point
+    of this one is to make a verdict obvious at a glance.
+
+    So each finding states the measurement, the threshold it is judged against,
+    and what it means in ordinary words -- with a boolean, so the UI can mark it
+    good or bad without re-deriving the gate.
+    """
+    min_tpd = cfg.get("min_tpd", 1.0)
+    d10 = report.days_to_10pct(cagr)
+    out = []
+
+    # Frequency first: it is what kills nearly everything in this corpus, and
+    # "one trade every 48 days" lands where "0.021 tpd" does not.
+    every = f", one every {1 / tpd:,.0f} days" if tpd and tpd > 0 else ""
+    # Frequency is a three-band decision, not merely pass/fail.  Kristijonas'
+    # research preference: 0.4+/day is usable, 0.2–0.4 deserves a yellow watch
+    # label, and below 0.2 is too sparse to take seriously.
+    freq_level = "good" if tpd >= min_tpd else ("warn" if tpd >= 0.2 else "bad")
+    out.append({"ok": bool(tpd >= min_tpd), "level": freq_level,
+                "text": f"trades {tpd:.2f}/day{every} — needs {min_tpd:g}/day "
+                        f"to clear a challenge in time"})
+
+    out.append({"ok": bool(pf >= 1.2),
+                "text": f"profit factor {pf:.2f} — makes ${pf:.2f} for every "
+                        f"$1.00 it loses (gate: 1.20)"})
+
+    if d10 and d10 > 0:
+        out.append({"ok": bool(d10 <= 365),
+                    "text": f"{d10:,.0f} days to reach +10% at 1% risk per "
+                            f"trade" + (" — far too slow to fund an account"
+                                        if d10 > 365 else "")})
+    else:
+        out.append({"ok": False,
+                    "text": "loses money over the test — there is no date at "
+                            "which it reaches +10%"})
+
+    out.append({"ok": bool(dsr >= 0.95),
+                "text": f"{dsr * 100:.0f}% chance the edge is real, after "
+                        f"paying for {spent:.0f} trials already spent in "
+                        f"{asset} (gate: 95%)"})
+
+    out.append({"ok": bool(n >= 100),
+                "text": f"{n} trades over {years:.1f} years on {n_syms} symbols, "
+                        f"{cfg['tf']} bars"
+                        + ("" if n >= 100 else " — too small a sample to trust")})
+
+    out.append({"ok": bool(win >= 0.5),
+                "text": f"wins {win * 100:.0f}% of trades"})
+
+    out.append({"ok": bool(dd <= 0.35),
+                "text": f"worst drawdown {dd * 100:.0f}% of accumulated profit"})
+
+    if not cfg.get("deployable", False):
+        out.append({"ok": False,
+                    "text": "daily bars only — evidence about the MECHANIC, "
+                            "not a leg you can trade on a challenge yet"})
+    return out
+
+
+def _headline(points: list[dict], promote: bool) -> str:
+    """One line: the verdict and the single reason for it."""
+    if promote:
+        return "PASSES every gate — verify by hand before deploying."
+    bad = [p["text"] for p in points if not p["ok"]]
+    if not bad:
+        return "Held: clears the gates but not by enough to promote."
+    return "Fails on " + bad[0].split(" — ")[0] + f" ({len(bad)} issues)."
+
+
+def _work_queue(st: CandidateStore, limit: int | None = None, translator=None) -> list[dict]:
     """Untested candidates that can actually be worked on, most-popular first.
 
     `CandidateStore.queue()` alone is not enough for a loop that runs forever.
@@ -186,8 +390,61 @@ def _work_queue(st: CandidateStore, limit: int) -> list[dict]:
     directory listing is nothing next to one backtest.
     """
     have_pine = {p.stem for p in PINE.glob("*.pine")}
-    ready = [r for r in st.queue(limit=None) if _safe(r["id"]) in have_pine]
-    return ready[:limit]
+    ready = [r for r in st.queue(limit=None)
+             if (_safe(r["id"]) in have_pine or
+                 (r.get("source") == "Invented" and _implementation(r)))]
+
+    # The old queue was pure popularity.  That is useful evidence that people
+    # looked at an idea, but it is not evidence of edge, and it starves every
+    # less-famous mechanic behind another EMA/RSI clone.  Priority is therefore
+    # deterministic and deliberately conservative:
+    #   1. only stored Pine is eligible (a real test is possible now),
+    #   2. deployable intraday crypto is preferred over daily-only evidence,
+    #   3. interpretable mechanics beat grid/martingale constructions,
+    #   4. families already measured are down-weighted for diversity,
+    #   5. popularity is only a final, weak signal.
+    # It is a work order, NEVER a predicted-return score.
+    tested_by_tag: dict[str, int] = {}
+    for row in st.all():
+        if row["status"] not in ("tested", "promoted"):
+            continue
+        for tag in row.get("mechanics") or []:
+            tested_by_tag[tag] = tested_by_tag.get(tag, 0) + 1
+
+    def tags(row: dict) -> list[str]:
+        raw = row.get("mechanics") or []
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                raw = []
+        return raw
+
+    def priority(row: dict) -> float:
+        t = tags(row)
+        asset = row.get("asset_class")
+        score = {"Crypto": 100.0, "FX": 45.0, "Stocks": 40.0,
+                 "Futures": 40.0}.get(asset, -100.0)
+        # A cached or engine-native implementation can be verified NOW. Put
+        # those ahead of rows that first need a fresh Pine translation, so the
+        # useful test queue is never held hostage by translator failures.
+        source = _implementation(row)
+        cached = getattr(translator, "cached", lambda **_: False)
+        if row.get("source") == "Invented" or (translator and source and
+                                                 cached(name=row["name"], source=source)):
+            score += 300.0
+        # Known strategy shapes. These are triage weights, not a backtest gate.
+        score += sum({"structure": 28.0, "volume": 24.0, "breakout": 20.0,
+                      "mean_reversion": 16.0, "momentum": 14.0,
+                      "trend": 10.0, "volatility": 8.0}.get(x, 0.0) for x in t)
+        if "grid_martingale" in t:
+            score -= 200.0
+        score -= 12.0 * sum(tested_by_tag.get(x, 0) for x in t)
+        score += min(math.log1p(max(row.get("popularity") or 0, 0)) * 5.0, 55.0)
+        return score
+
+    ready.sort(key=lambda r: (-priority(r), -(r.get("popularity") or 0), r["id"]))
+    return ready if limit is None else ready[:limit]
 
 
 def _safe(cid: str) -> str:
@@ -197,10 +454,18 @@ def _safe(cid: str) -> str:
 def run_pass(limit: int = 5, use_llm: bool | None = None,
              store: CandidateStore | None = None,
              ledger: Ledger | None = None,
-             harvest: bool = True) -> PassResult:
+             harvest: bool = True, progress=None) -> PassResult:
+    supplied_store = store is not None
     st = store or CandidateStore()
     led = ledger or Ledger(STATE / "ledger.json")
     res = PassResult()
+
+    # Seed only a handful of transparent hypotheses.  This happens before the
+    # queue is ranked, so invented work competes under the exact same gates as
+    # TradingView work; it never receives a free pass or a synthetic score.
+    if not supplied_store:
+        from .invent import seed as seed_invented
+        seed_invented(st)
 
     # API key if set, else headless Claude Code on the subscription, else None.
     # None means "park it", never "test it with placeholder logic".
@@ -209,25 +474,42 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
     for cfg_name, cfg in UNIVERSES.items():
         led.universe(cfg_name, years=cfg["years"], n_eff=cfg["n_eff"])
 
-    # ---- harvest (free, no budget). Failures here are never fatal: the queue
-    # is normally already full, and a TradingView outage must not stop testing.
+    # ---- harvest, but only when the engine is actually short of work.
+    #
+    # Harvesting costs no trial budget and no tokens -- it is plain HTTP -- so
+    # the first version ran it every pass. That was still wrong: it collected
+    # ~25 new Pine sources per pass while testing 3, a 6:1 ratio, so the backlog
+    # grew without bound and every pass paid ~90 seconds for candidates nobody
+    # would reach for days. Collecting is not progress; measuring is.
+    #
+    # So harvest is now DEMAND-DRIVEN: it runs only when the workable backlog
+    # (untested AND Pine stored) has fallen below a floor. With a full queue the
+    # pass skips straight to testing and finishes in a third of the time.
     n_pass = _pass_no()
-    if harvest:
+    ready = _work_queue(st, translator=translator)
+    if harvest and len(ready) < HARVEST_FLOOR:
         try:
             from .sources.tradingview import TERMS, harvest as tv_harvest
             res.harvest = tv_harvest(offset=(n_pass * 6) % len(TERMS),
                                      store=st, max_terms=6, max_fetch=25)
+            ready = _work_queue(st, translator=translator)
         except Exception as e:                                   # noqa: BLE001
             res.errors.append(f"harvest: {type(e).__name__}: {e}")
+    res.backlog = len(ready)
 
-    for row in _work_queue(st, limit):
+    for row in ready[:limit]:
         res.considered += 1
         cid, asset = row["id"], row["asset_class"]
-        cfg = UNIVERSES.get(asset)
+        if progress:
+            progress({"id": cid, "name": row["name"], "asset_class": asset,
+                      "stage": "translating and backtesting", "number": res.considered,
+                      "total": min(limit, len(ready))})
+        cfg_base = UNIVERSES.get(asset)
+        cfg = {**cfg_base, "asset": asset} if cfg_base else None
         if cfg is None:
-            st.update_result(cid, status="rejected", verdict="fail", score=1,
+            st.update_result(cid, status="blocked", verdict="blocked", score=None,
                              note=f"asset class {asset!r} has no data universe")
-            res.rejected += 1
+            res.blocked += 1
             continue
 
         if led.budgets[asset].exhausted:
@@ -245,7 +527,8 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
         # strategy's performance to another, which is fabrication regardless of
         # intent. The candidate is parked instead, no budget is spent, and the
         # dashboard says plainly why.
-        if translator is None:
+        invented = row.get("source") == "Invented"
+        if translator is None and not invented:
             st.update_result(
                 cid, status="harvested", verdict="pending", score=None,
                 note="awaiting translation — ANTHROPIC_API_KEY not set, so the "
@@ -254,12 +537,28 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
             res.blocked += 1
             continue
 
-        pine = _pine_source(cid)
-        if not pine:
+        source = _implementation(row)
+        if not source:
             st.update_result(
                 cid, status="harvested", verdict="pending", score=None,
                 note="awaiting Pine source — harvested metadata only, "
                      "nothing measured")
+            res.blocked += 1
+            continue
+
+        # Exact-source dedupe: two TradingView listings may have different
+        # titles/likes but identical logic.  Do not pay the trial budget twice.
+        # This intentionally does NOT call all EMA strategies duplicates: same
+        # family is useful for diversity control, identical implementation is
+        # the only automatic duplicate claim we can defend.
+        fingerprint = hashlib.sha256("".join(source.split()).encode()).hexdigest()
+        duplicate = next((other for other in st.all() if other["id"] != cid and
+                          _implementation(other) and
+                          hashlib.sha256("".join(_implementation(other).split()).encode()).hexdigest() == fingerprint), None)
+        if duplicate:
+            st.update_result(cid, status="duplicate", verdict="duplicate", score=None,
+                             duplicate_of=duplicate["id"],
+                             note=f"exact duplicate of {duplicate['id']}; not retested and no trial budget spent")
             res.blocked += 1
             continue
 
@@ -281,21 +580,24 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
         st.update_result(cid, attempts=attempts)
         if attempts > MAX_ATTEMPTS:
             st.update_result(
-                cid, status="rejected", verdict="fail", score=1,
+                cid, status="blocked", verdict="blocked", score=None,
                 note=f"gave up after {MAX_ATTEMPTS} attempts to produce a "
                      f"testable translation. NO trial budget was spent and the "
                      f"idea was never refuted — this is a TOOLING failure. "
                      f"Un-park with: UPDATE candidates SET status='harvested', "
                      f"attempts=0 WHERE id='{cid}';")
-            res.rejected += 1
+            res.blocked += 1
             continue
 
         try:
-            code = translator.translate(
-                name=row["name"], source=pine,
-                author=row.get("author") or "",
-                description=row.get("description") or "")
-            res.translated += 1
+            if invented:
+                code = source
+            else:
+                code = translator.translate(
+                    name=row["name"], source=source,
+                    author=row.get("author") or "",
+                    description=row.get("description") or "")
+                res.translated += 1
         except Exception as e:                                   # noqa: BLE001
             res.errors.append(f"{cid}: translate: {e}")
             continue
@@ -312,35 +614,22 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
             # A failed translation is NOT a failed strategy. No budget is spent,
             # and the note says so, so the row can be retried after a translator
             # fix without anyone thinking the idea was refuted.
-            st.update_result(cid, status="rejected", verdict="fail", score=1,
+            st.update_result(cid, status="blocked", verdict="blocked", score=None,
                              note="translation rejected: " + "; ".join(t.failures[:2])
                                   + " (no trial budget spent — this is a "
                                     "translator failure, not a result)")
             res.verify_failed += 1
-            res.rejected += 1
+            res.blocked += 1
             continue
 
         # ---- backtest, pooled across the universe with zero admission
-        cells, pooled = {}, []
         try:
-            fn_ns: dict = {}
-            exec(compile(code, "<t>", "exec"), fn_ns)             # noqa: S102
-            fn = fn_ns["signals"]
-            for sym in cfg["symbols"]:
-                df = _load_bars(sym, cfg)
-                intents = fn(df.copy())
-                trades = bridge.run_backtest(
-                    df, intents, fee=bridge.TAKER, slippage=bridge.SLIP,
-                    rr=2.0, max_hold=40, cooldown=1)
-                r = [x.pnl_r for x in trades]
-                if r:
-                    cells[sym] = pd.Series(r)
-                    pooled += [(x.entry_time, x.exit_time, x.pnl_r) for x in trades]
+            cells, bar_from, bar_to = _backtest(code, cfg, cost=COSTS[asset])
         except Exception as e:                                   # noqa: BLE001
             res.errors.append(f"{cid}: backtest: {type(e).__name__}: {e}")
-            st.update_result(cid, status="rejected", verdict="fail", score=1,
+            st.update_result(cid, status="blocked", verdict="blocked", score=None,
                              note=f"backtest raised: {type(e).__name__}")
-            res.rejected += 1
+            res.blocked += 1
             continue
 
         if not cells:
@@ -358,45 +647,34 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
                 res.exhausted.append(asset)
             continue
 
-        rs = np.concatenate([c.values for c in cells.values()])
-        gains, losses = rs[rs > 0].sum(), -rs[rs < 0].sum()
-        pf = float(gains / losses) if losses > 0 else float("inf")
-        win = float((rs > 0).mean())
-        span_days = max((pd.Timestamp(pooled[-1][1]) - pd.Timestamp(pooled[0][0])).days, 1)
-        tpd = len(rs) / span_days
-
-        sr_bar = float(rs.mean() / rs.std()) if rs.std() > 0 else 0.0
-        bpy = BARS_PER_YEAR.get(cfg["tf"], 252)
-        sharpe = sr_bar * np.sqrt(bpy)
-        dsr = deflated_sharpe(sr_bar, n_trials=max(led.budgets[asset].spent, 1),
-                              n_obs=len(rs))
-
-        eq = np.cumsum(rs)
-        dd = float((np.maximum.accumulate(eq) - eq).max() / max(abs(eq).max(), 1))
-        cagr = float(rs.sum() * 0.01 / (span_days / 365.25))      # R at 1% risk
-
-        min_tpd = cfg.get("min_tpd", 1.0)
-        score = _score(pf, tpd, dsr, dd)
-        promote = dsr >= 0.95 and pf >= 1.2 and tpd >= min_tpd
-        verdict = "pass" if promote else ("hold" if pf >= 1.2 or dsr >= 0.9 else "fail")
-
-        # Say WHY, in the row itself. A verdict without the gate that produced
-        # it is the thing that gets misread three weeks later.
-        why = (f"tested on {len(cells)} symbols, {len(rs)} trades, {cfg['tf']} bars. "
-               f"DSR {dsr:.2f} after {led.budgets[asset].spent:.0f} trials in {asset}. "
-               f"Gate: PF>=1.2, DSR>=0.95, tpd>={min_tpd:g}.")
-        if not cfg.get("deployable", False):
-            why += (" DAILY universe — research evidence about the mechanic, "
-                    "NOT a deployable challenge leg (no intraday history here).")
-        st.update_result(
-            cid, status="promoted" if promote else "tested",
-            pf=round(pf, 3), tpd=round(tpd, 3), cagr=round(cagr, 4),
-            max_dd=round(dd, 4), win_rate=round(win, 4), sharpe=round(sharpe, 3),
-            dsr=round(dsr, 4), trades=len(rs), trials=int(spend.charged),
-            score=score, verdict=verdict, note=why)
+        # Robustness matrix: base conditions, deliberately worse fills, a
+        # chronological hold-out, plus another Crypto timeframe when the data
+        # loader supports it.  A missing scenario is visible, never a pass.
+        scenarios = [_scenario(cells, f"{asset} {cfg['tf']} · realistic costs",
+                               detail=f"fee {COSTS[asset].fee:.04%}/side, slip {COSTS[asset].slippage:.04%}")]
+        checks = [
+            ("cost stress", cfg, {"cost": stress_cost(asset)}),
+            ("chronological hold-out", cfg, {"cost": COSTS[asset], "holdout": True}),
+        ]
+        if asset == "Crypto":
+            checks.append(("Crypto 1h · realistic costs", {**cfg, "tf": "1h"},
+                           {"cost": COSTS[asset]}))
+        for label, scenario_cfg, kwargs in checks:
+            try:
+                extra, _, _ = _backtest(code, scenario_cfg, **kwargs)
+                scenarios.append(_scenario(extra, label))
+            except Exception as e:  # unavailable data is reported, not hidden
+                scenarios.append(_scenario({}, label, available=False,
+                                           detail=f"unavailable: {type(e).__name__}"))
+        robust = assess(scenarios)
+        fields = _judge(cells, bar_from, bar_to, cfg, asset,
+                        spent=led.budgets[asset].spent, robustness=robust)
+        fields["trials"] = int(spend.charged)
+        st.update_result(cid, **fields)
+        st.append_audit(cid, "backtest completed", f"{fields['verdict']} · PF {fields['pf']}")
         res.tested += 1
-        res.promoted += int(promote)
-        res.rejected += int(verdict == "fail")
+        res.promoted += int(fields["status"] == "promoted")
+        res.rejected += int(fields["verdict"] == "fail")
 
     for name, b in led.budgets.items():
         if b.exhausted and name not in res.exhausted:
@@ -415,15 +693,120 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
     return res
 
 
+def recheck(store: CandidateStore | None = None,
+            ledger: Ledger | None = None) -> PassResult:
+    """Re-measure every already-tested row on the CURRENT metric definitions.
+
+    Spends NO trial budget, and that is not a loophole. The budget exists to
+    charge for SEARCH -- for the selection bias in picking the best of N
+    configurations. Re-running one already-chosen configuration on the same data
+    searches nothing and cannot flatter anything; the row keeps the `trials` it
+    was charged when it was chosen.
+
+    This exists because a metric definition changed once (trades/day moved from
+    the trade span to the data window, which is stricter) and half the table
+    would otherwise have been on the old ruler, in the same sort order, with
+    nothing marking which rows were which. Translations are cached, so this
+    costs no tokens either.
+    """
+    st = store or CandidateStore()
+    led = ledger or Ledger(STATE / "ledger.json")
+    res = PassResult()
+    translator = best_translator()
+    if translator is None:
+        res.errors.append("recheck needs a translator to rebuild signal code")
+        return res
+
+    for row in st.all():
+        if row["status"] not in ("tested", "promoted"):
+            continue
+        cid, asset = row["id"], row["asset_class"]
+        cfg_base = UNIVERSES.get(asset)
+        cfg = {**cfg_base, "asset": asset} if cfg_base else None
+        source = _implementation(row)
+        if cfg is None or not source:
+            continue
+        res.considered += 1
+        try:
+            code = (source if row.get("source") == "Invented" else translator.translate(
+                name=row["name"], source=source, author=row.get("author") or "",
+                description=row.get("description") or ""))
+            cells, lo, hi = _backtest(code, cfg, cost=COSTS[asset])
+            if not cells:
+                continue
+            # `spent` is the budget ALREADY charged in this universe, exactly as
+            # the original verdict saw it -- not a fresh debit.
+            # A recheck does not invent a new robustness result.  Preserve the
+            # existing matrix, which was charged when this hypothesis ran.
+            st.update_result(cid, **_judge(cells, lo, hi, cfg, asset,
+                                           spent=led.budgets[asset].spent,
+                                           robustness=row.get("robustness")))
+            res.tested += 1
+        except Exception as e:                                   # noqa: BLE001
+            res.errors.append(f"{cid}: recheck: {type(e).__name__}: {e}")
+
+    to_dashboard(st)
+    report.write_results(st, led, res)
+    return res
+
+
+def refresh_findings(store: CandidateStore | None = None,
+                     ledger: Ledger | None = None) -> int:
+    """Refresh wording/colour bands without re-running or re-charging a test."""
+    st = store or CandidateStore()
+    led = ledger or Ledger(STATE / "ledger.json")
+    changed = 0
+    for row in st.all():
+        if row["status"] not in ("tested", "promoted") or row["pf"] is None:
+            continue
+        cfg_base = UNIVERSES.get(row["asset_class"])
+        if not cfg_base:
+            continue
+        cfg = {**cfg_base, "asset": row["asset_class"]}
+        pts = _points(row["pf"], row["tpd"], row["dsr"], row["max_dd"],
+                      row["win_rate"], row["cagr"], row["trades"], row["years"],
+                      len(cfg["symbols"]), led.budgets[row["asset_class"]].spent,
+                      row["asset_class"], cfg)
+        robust = row.get("robustness")
+        if robust and robust.get("coverage"):
+            pts.append({"ok": bool(robust["stable"]),
+                        "text": f"robustness: {robust['passed']}/{robust['coverage']} scenario checks pass"
+                                + (" — stable across costs/timeframes" if robust["stable"]
+                                   else " — not stable enough to promote")})
+        st.update_result(row["id"], points=json.dumps(pts),
+                         note=_headline(pts, row["status"] == "promoted"))
+        changed += 1
+    to_dashboard(st)
+    return changed
+
+
 def main() -> int:
+    if "--recheck" in sys.argv:
+        r = recheck()
+        print(f"  rechecked {r.tested} of {r.considered} tested rows "
+              f"on current metric definitions (no budget spent)")
+        for e in r.errors[:5]:
+            print(f"  error: {e}")
+        return 0
     limit = int(os.environ.get("PASS_LIMIT", "5"))
     harvest = os.environ.get("HARVEST", "1") != "0"
-    print(f"[{datetime.now(timezone.utc).isoformat(timespec='seconds')}] pass start")
+    from . import activity
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    print(f"[{started}] pass start")
+    activity.write(status="running", started=started)
     try:
-        r = run_pass(limit=limit, harvest=harvest)
-    except Exception:                                            # noqa: BLE001
+        r = run_pass(limit=limit, harvest=harvest,
+                     progress=lambda current: activity.write(
+                         status="running", started=started, current=current))
+    except Exception as e:                                       # noqa: BLE001
+        activity.write(status="error", started=started, error=f"{type(e).__name__}: {e}")
         traceback.print_exc()
         return 1
+    activity.write(status="idle", started=started,
+                   summary={"considered": r.considered, "translated": r.translated,
+                            "tested": r.tested, "promoted": r.promoted,
+                            "rejected": r.rejected, "blocked": r.blocked,
+                            "finished": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     if r.harvest:
         h = r.harvest
         print(f"  harvest: +{h.get('added', 0)} new of {h.get('seen', 0)} seen | "

@@ -112,10 +112,28 @@ class Candidate:
     # same claim, and neither is one charged 3 trials against one charged 300.
     trades: int = 0
     trials: int = 0
+    # The DATA WINDOW the verdict was produced on. A PF with no period attached
+    # is unreadable: "PF 1.6" over 8 months and over 5 years are different
+    # claims, and the second is the only one worth acting on.
+    tested_from: str | None = None
+    tested_to: str | None = None
+    years: float | None = None
+    test_timeframe: str | None = None
+    # Plain-language good/bad findings, JSON. See runner._points(). The dense
+    # sentence this replaced could not be skimmed, and a research console that
+    # has to be read closely does not get read.
+    points: str | None = None
+    # Robustness is the scenario matrix (base, costly execution, hold-out,
+    # and additional available timeframes/markets).  Kept separately from the
+    # headline metrics so the dashboard can state exactly how broad the claim is.
+    robustness: str | None = None
+    duplicate_of: str | None = None
     # How many passes have picked this row up and failed to get a result out of
     # it. A row that keeps raising never changes status, so without a counter it
     # sits at the head of a popularity-ordered queue and is retried forever.
     attempts: int = 0
+    implementation_attempts: int = 0
+    audit: str | None = None
     score: int | None = None
     verdict: str | None = None
     note: str | None = None
@@ -128,7 +146,9 @@ CREATE TABLE IF NOT EXISTS candidates (
     popularity INTEGER, has_source INTEGER, mechanics TEXT, harvested TEXT,
     status TEXT, pf REAL, tpd REAL, cagr REAL, max_dd REAL, win_rate REAL,
     sharpe REAL, dsr REAL, trades INTEGER, trials INTEGER, attempts INTEGER,
-    score INTEGER, verdict TEXT, note TEXT
+    score INTEGER, verdict TEXT, note TEXT, implementation_attempts INTEGER DEFAULT 0,
+    tested_from TEXT, tested_to TEXT, years REAL, test_timeframe TEXT, points TEXT,
+    robustness TEXT, duplicate_of TEXT, audit TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_source ON candidates(source);
 CREATE INDEX IF NOT EXISTS idx_status ON candidates(status);
@@ -140,7 +160,16 @@ CREATE INDEX IF NOT EXISTS idx_status ON candidates(status);
 # Migrations are additive only: dropping or retyping a column here would discard
 # measurements that cost trial budget to produce.
 _MIGRATIONS = [("trades", "INTEGER DEFAULT 0"),
-               ("attempts", "INTEGER DEFAULT 0")]
+               ("attempts", "INTEGER DEFAULT 0"),
+               ("implementation_attempts", "INTEGER DEFAULT 0"),
+               ("tested_from", "TEXT"),
+               ("tested_to", "TEXT"),
+               ("years", "REAL"),
+               ("test_timeframe", "TEXT"),
+               ("points", "TEXT"),
+               ("robustness", "TEXT"),
+               ("duplicate_of", "TEXT")]
+_MIGRATIONS.append(("audit", "TEXT"))
 
 
 class CandidateStore:
@@ -212,8 +241,9 @@ class CandidateStore:
 
     def update_result(self, cid: str, **fields) -> None:
         allowed = {"status", "pf", "tpd", "cagr", "max_dd", "win_rate", "sharpe",
-                   "dsr", "trades", "trials", "attempts", "score", "verdict",
-                   "note"}
+                   "dsr", "trades", "trials", "attempts", "implementation_attempts", "score", "verdict",
+                   "note", "tested_from", "tested_to", "years", "test_timeframe", "points",
+                   "robustness", "duplicate_of", "audit"}
         bad = set(fields) - allowed
         if bad:
             raise KeyError(f"not result fields: {bad}")
@@ -229,6 +259,9 @@ class CandidateStore:
         for r in rows:
             d = dict(r)
             d["mechanics"] = json.loads(d["mechanics"] or "[]")
+            d["points"] = json.loads(d["points"] or "[]")
+            d["robustness"] = json.loads(d["robustness"] or "null")
+            d["audit"] = json.loads(d["audit"] or "[]")
             d["has_source"] = bool(d["has_source"])
             out.append(d)
         return out
@@ -236,6 +269,17 @@ class CandidateStore:
     def counts(self) -> dict:
         q = "SELECT status, COUNT(*) n FROM candidates GROUP BY status"
         return {r["status"]: r["n"] for r in self.db.execute(q)}
+
+    def append_audit(self, cid: str, event: str, detail: str = "") -> None:
+        row = self.db.execute("SELECT audit FROM candidates WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return
+        entries = json.loads(row["audit"] or "[]")
+        entries.append({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "event": event, "detail": detail})
+        self.db.execute("UPDATE candidates SET audit=? WHERE id=?",
+                        (json.dumps(entries[-20:]), cid))
+        self.db.commit()
 
     def queue(self, limit: int | None = 50) -> list[dict]:
         """Untested candidates, most-popular first — a work order, not a ranking.
@@ -307,12 +351,21 @@ def to_dashboard(store: CandidateStore | None = None,
             "symbols": r["symbol_hint"] or "—",
             "author": r["author"], "url": r["url"],
             "mechanics": r["mechanics"],
+            "has_source": r["has_source"],
             "popularity": r["popularity"],
             "pf": r["pf"], "tpd": r["tpd"], "cagr": r["cagr"],
             "max_dd": r["max_dd"], "win_rate": r["win_rate"],
             "sharpe": r["sharpe"], "dsr": r["dsr"],
             "trades": r.get("trades") or 0,
             "trials": r["trials"] or 0,
+            "implementation_attempts": r.get("implementation_attempts") or 0,
+            "tested_from": r.get("tested_from"), "tested_to": r.get("tested_to"),
+            "years": r.get("years"),
+            "test_timeframe": r.get("test_timeframe"),
+            "points": r.get("points") or [],
+            "robustness": r.get("robustness"),
+            "duplicate_of": r.get("duplicate_of"),
+            "audit": r.get("audit") or [],
             "score": r["score"],
             "verdict": r["verdict"] or "pending",
             "note": r["note"] or _pending_note(r),

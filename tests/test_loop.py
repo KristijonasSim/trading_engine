@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from engine import report, runner
+from engine import harvest, report, runner
 from engine.budget import Ledger
 from engine.harvest import Candidate, CandidateStore
 
@@ -43,12 +43,17 @@ def _tmp() -> Path:
 
 
 def _silence_reporting(tmp: Path) -> None:
-    """Keep a test pass off the network and out of the real RESULTS.md."""
+    """Keep a test pass off network and every real generated artifact."""
     report.RESULTS = tmp / "RESULTS.md"
     report.NOTIFIED = tmp / "notified.json"
     report.STATE = tmp
     (tmp / "pine").mkdir(exist_ok=True)
     report.push = lambda *a, **k: True
+    # runner imports to_dashboard directly, so report redirection alone still
+    # let a fixture row overwrite dashboard/strategies.json.  The dashboard is
+    # real operator state, not a test artifact.
+    runner.to_dashboard = lambda store: harvest.to_dashboard(
+        store, out=tmp / "strategies.json")
 
 
 # ------------------------------------------------------------------ starvation
@@ -76,6 +81,22 @@ def test_queue_scans_the_whole_store():
     check("store.queue(limit=None) returns everything",
           len(st.queue(limit=None)) == 201)
     check("an explicit limit is still honoured", len(st.queue(limit=5)) == 5)
+
+
+def test_queue_prefers_deployable_diverse_mechanics_over_likes():
+    """Popularity is a weak tiebreaker, not the research policy."""
+    tmp = _tmp()
+    runner.PINE = tmp / "pine"
+    runner.PINE.mkdir()
+    st = CandidateStore(tmp / "c.db")
+    st.upsert(Candidate(id="tv:popular-fx", source="TradingView", name="Popular EMA",
+                        asset_class="FX", popularity=100_000, mechanics=["trend"]))
+    st.upsert(Candidate(id="tv:crypto-flow", source="TradingView", name="Crypto flow",
+                        asset_class="Crypto", popularity=5, mechanics=["structure", "volume"]))
+    for cid in ("tv:popular-fx", "tv:crypto-flow"):
+        (runner.PINE / (cid.replace(":", "_") + ".pine")).write_text("// strategy")
+    q = runner._work_queue(st, limit=2)
+    check("deployable clear mechanic outranks popularity", q[0]["id"] == "tv:crypto-flow")
 
 
 # ------------------------------------------------------------------------ spin
@@ -113,9 +134,9 @@ def test_a_broken_candidate_is_parked_not_retried_forever():
     check("it is retried a few times, not once",
           _BrokenTranslator.calls == runner.MAX_ATTEMPTS,
           f"{_BrokenTranslator.calls} attempts")
-    check("then it is parked", row["status"] == "rejected")
+    check("then it is parked for implementation", row["status"] == "blocked")
     check("and the loop stops touching it",
-          seen_status[-1] == "rejected" and seen_status[-2] == "rejected")
+          seen_status[-1] == "blocked" and seen_status[-2] == "blocked")
     check("no trial budget was spent on a tooling failure",
           led.budgets["Crypto"].spent == 0,
           f"spent {led.budgets['Crypto'].spent}")
@@ -148,10 +169,33 @@ def test_a_missing_translator_never_convicts_anything():
     check("and no PF is invented for it", row["pf"] is None)
 
 
+def test_bars_are_recent_and_epoch_ms_is_not_1970():
+    """A naked epoch-ms integer is nanoseconds to pandas: pin the real unit."""
+    import pandas as pd
+    original = runner.bridge.fetch_crypto
+    now = pd.Timestamp("2026-08-11", tz="UTC")
+    dates = pd.date_range(now - pd.Timedelta(days=365 * 7), periods=600,
+                          freq="4D", tz="UTC")
+    starts = [x.value // 1_000_000 for x in dates]
+    src = pd.DataFrame({"start": starts, "open": 1.0, "high": 1.0,
+                        "low": 1.0, "close": 1.0, "volume": 1.0})
+    try:
+        runner.bridge.fetch_crypto = lambda *a, **k: src
+        got = runner._load_bars("BTCUSDT", runner.UNIVERSES["Crypto"])
+        first = pd.to_datetime(got["start"].iloc[0], unit="ms", utc=True)
+        last = pd.to_datetime(got["start"].iloc[-1], unit="ms", utc=True)
+        check("timestamps retain their millisecond unit", first.year > 2020)
+        check("window contains at most five years", (last - first).days <= 365 * 5 + 2)
+    finally:
+        runner.bridge.fetch_crypto = original
+
+
 if __name__ == "__main__":
     test_queue_scans_the_whole_store()
+    test_queue_prefers_deployable_diverse_mechanics_over_likes()
     test_a_broken_candidate_is_parked_not_retried_forever()
     test_a_missing_translator_never_convicts_anything()
+    test_bars_are_recent_and_epoch_ms_is_not_1970()
     n, total = sum(_results), len(_results)
     print(f"\n{n}/{total} checks passed")
     raise SystemExit(0 if n == total else 1)

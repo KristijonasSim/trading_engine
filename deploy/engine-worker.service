@@ -1,0 +1,24 @@
+[Unit]
+Description=trading_engine — continuous single-strategy research worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/trading_engine
+Environment=TRADING_BOTS_DATA=%h/trading-bots/scalping/data
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+# One candidate per iteration.  This is a rate limit, not a trial-budget
+# override: runner still refuses new verdicts after a universe is exhausted.
+Environment=WORKER_INTERVAL=15
+ExecStart=%h/trading_engine/.venv/bin/python -m engine.worker
+Restart=always
+RestartSec=20
+TimeoutStopSec=30
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

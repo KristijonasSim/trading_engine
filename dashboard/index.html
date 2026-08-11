@@ -1,3 +1,5 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Strategy Research — console</title>
 <style>
   :root {
@@ -77,13 +79,28 @@
   }
   .title { font-size: 21px; font-weight: 640; letter-spacing: -.015em; }
   .title span { color: var(--accent); }
-  .updated { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin-left: auto; }
+  .activity-link { margin-left: 4px; color: var(--ink-3); font: 12px var(--mono); text-decoration: none; }
+  .activity-link:hover { color: var(--accent); }
+  .top-meta { margin-left: auto; text-align: right; }
+  .updated { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+  .refresh-line { margin-top:3px; display:flex; justify-content:flex-end; align-items:center; gap:7px; }
+  .refresh-countdown { color: var(--accent); font: 10.5px var(--mono); }
+  .refresh-now { border:1px solid var(--line); border-radius:4px; padding:2px 6px; background:var(--surface); color:var(--ink-2); cursor:pointer; font:10px var(--mono); }
+  .refresh-now:hover { color:var(--accent); border-color:var(--accent); }
+  .method { margin: 10px 0 0; color: var(--ink-3); font: 11px var(--mono); }
+  .live-strip { display:flex; flex-wrap:wrap; gap:8px 18px; margin-top:12px; padding:8px 11px; border:1px solid var(--line-soft); border-radius:7px; color:var(--ink-2); font:11px var(--mono); }
+  .live-strip b { color:var(--accent); font-weight:600; }
+  .history { display:flex; align-items:end; gap:5px; min-height:30px; margin-top:9px; }
+  .history span { width:18px; min-height:2px; background:var(--accent); border-radius:2px 2px 0 0; opacity:.8; }
 
   .banner {
     margin: 16px 0 0; padding: 11px 14px; border-radius: var(--r);
     background: var(--hold-bg); border: 1px solid color-mix(in srgb, var(--hold) 34%, transparent);
     color: var(--hold); font-size: 13px; display: flex; gap: 9px; align-items: flex-start;
   }
+  /* Author CSS above overrides the browser's generic [hidden] rule unless we
+     state it here. Without this, real data still wore the sample-data banner. */
+  .banner[hidden] { display: none; }
   .banner b { font-weight: 650; }
 
   /* ---------------- summary ---------------- */
@@ -95,6 +112,9 @@
     background: var(--surface); border: 1px solid var(--line-soft);
     border-radius: var(--r); padding: 13px 15px;
   }
+  button.stat { appearance: none; width: 100%; text-align: left; font: inherit; cursor: pointer; }
+  button.stat:hover { border-color: var(--accent); }
+  button.stat:focus-visible { outline-offset: 2px; }
   .stat .k {
     font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em;
     text-transform: uppercase; color: var(--ink-3);
@@ -138,7 +158,7 @@
   article.card {
     background: var(--surface); border: 1px solid var(--line-soft);
     border-radius: var(--r); padding: 15px 16px 13px;
-    display: flex; flex-direction: column; gap: 11px;
+    display: flex; flex-direction: column; gap: 9px;
     border-left: 3px solid var(--verdict, var(--ink-3));
     transition: border-color .12s ease, transform .12s ease;
   }
@@ -146,8 +166,12 @@
   .card.v-pass { --verdict: var(--pass); }
   .card.v-hold { --verdict: var(--hold); }
   .card.v-fail { --verdict: var(--fail); }
+  .card.v-blocked { --verdict: var(--ink-3); }
+  .card.v-duplicate { --verdict: var(--ink-3); }
+  .card.v-implementing { --verdict: var(--hold); }
   .card.v-pending { --verdict: var(--ink-3); }
   .card.v-pending .chip.verdict { --vbg: var(--surface-2); }
+  .card.v-blocked .chip.verdict { --vbg: var(--surface-2); }
 
   .card-head { display: flex; gap: 12px; align-items: flex-start; }
   .card h3 { margin: 0; font-size: 15px; font-weight: 630; line-height: 1.28; letter-spacing: -.01em; }
@@ -175,6 +199,30 @@
   .card.v-pass .chip.verdict { --vbg: var(--pass-bg); }
   .card.v-hold .chip.verdict { --vbg: var(--hold-bg); }
   .card.v-fail .chip.verdict { --vbg: var(--fail-bg); }
+  .chip.asset-crypto { background:#f6ecd7; color:#96702a; }
+  .chip.asset-fx { background:#e8f3ec; color:#287052; }
+  .chip.asset-stocks { background:#f4ece0; color:#94612b; }
+  .chip.asset-futures { background:#f0e8f5; color:#7b4d96; }
+  .chip.mech-trend { background:#e8eff8; color:#376b9f; }
+  .chip.mech-momentum { background:#f8ece3; color:#a2572d; }
+  .chip.mech-mean-reversion { background:#eee9f7; color:#70519c; }
+  .chip.mech-breakout { background:#e3f2ef; color:#287d6e; }
+  .chip.mech-volatility { background:#f7ecec; color:#aa4e55; }
+  .chip.mech-volume, .chip.mech-structure { background:#edf0e1; color:#677834; }
+  .chip.robust { background: var(--pass-bg); color: var(--pass); }
+  .chip.fragile { background: var(--fail-bg); color: var(--fail); }
+  @media (prefers-color-scheme: dark) {
+    .chip.asset-crypto { background:#3a2d14; color:#e8c46f; }
+    .chip.asset-fx { background:#17372d; color:#7ed2a4; }
+    .chip.asset-stocks { background:#3b2c19; color:#efbc78; }
+    .chip.asset-futures { background:#30213d; color:#ce9aee; }
+    .chip.mech-trend { background:#1d2b3e; color:#98c4ee; }
+    .chip.mech-momentum { background:#3b251b; color:#f0ad7a; }
+    .chip.mech-mean-reversion { background:#2d253d; color:#c7adef; }
+    .chip.mech-breakout { background:#173a34; color:#80d1bf; }
+    .chip.mech-volatility { background:#3d2427; color:#f0a0a6; }
+    .chip.mech-volume, .chip.mech-structure { background:#30351e; color:#c8d788; }
+  }
 
   .metrics {
     display: grid; grid-template-columns: repeat(3, 1fr);
@@ -189,10 +237,36 @@
     margin-top: 1px; letter-spacing: -.01em;
   }
   .m .v.good { color: var(--pass); }
+  .m .v.warn { color: var(--hold); }
   .m .v.bad  { color: var(--fail); }
   .m .v.na   { color: var(--ink-3); }
 
-  .note { font-size: 12.5px; color: var(--ink-2); line-height: 1.42; }
+  .note { font-size: 12px; color: var(--ink-2); line-height: 1.35; }
+  /* The verdict in words. A dense sentence of measurements was unreadable at a
+     glance, which for a console is the same as being absent. */
+  .headline { font-size: 13px; font-weight: 600; margin: 2px 0 8px; }
+  .headline.ok  { color: var(--pass); }
+  .headline.no  { color: var(--fail); }
+  .period {
+    font-size: 11.5px; color: var(--ink-2); letter-spacing: .02em;
+    border-top: 1px solid var(--line-soft); padding-top: 8px; margin-top: 10px;
+  }
+  .points { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 5px; }
+  .points li {
+    font-size: 12.5px; line-height: 1.4; color: var(--ink-2);
+    display: grid; grid-template-columns: 14px 1fr; gap: 7px; align-items: start;
+  }
+  .points li::before { content: "✗"; color: var(--fail); font-weight: 700; }
+  .points li.ok::before { content: "✓"; color: var(--pass); }
+  .points li.ok { color: var(--ink); }
+  .points li.warn::before { content: "!"; color: var(--hold); }
+  details.matrix { border-top: 1px solid var(--line-soft); padding-top: 8px; }
+  details.matrix summary { cursor: pointer; color: var(--ink-2); font-size: 11.5px; }
+  .scenario-list { margin-top: 7px; display: grid; gap: 4px; font: 11px var(--mono); color: var(--ink-2); }
+  .scenario-list .pass { color: var(--pass); }
+  .scenario-list .fail { color: var(--fail); }
+  .retry { border:1px solid var(--line); border-radius:5px; background:var(--surface-2); color:var(--ink); cursor:pointer; font:11px var(--mono); padding:5px 7px; }
+  .retry:hover { border-color:var(--accent); color:var(--accent); }
 
   .empty {
     text-align: center; padding: 70px 20px; color: var(--ink-3);
@@ -208,9 +282,12 @@
 
 <div class="wrap">
   <header class="top">
-    <div class="title">Strategy Research <span>/</span> console</div>
-    <div class="updated" id="updated">—</div>
+    <div class="title">Strategy Research <span>/</span> console <a class="activity-link" href="activity.html">live activity ↗</a></div>
+    <div class="top-meta"><div class="updated" id="updated">—</div><div class="refresh-line"><div class="refresh-countdown" id="refresh-countdown">refresh —</div><button class="refresh-now" id="refresh-now" type="button">Refresh</button></div></div>
   </header>
+  <div class="method">Rolling 5-year window · realistic fees and slippage · results are research only</div>
+  <div class="live-strip" id="live-strip">Loading worker status…</div>
+  <div class="history" id="history" title="Daily tested + rejected + implemented activity"></div>
 
   <div class="banner" id="banner" hidden>
     <span>▲</span>
@@ -231,11 +308,36 @@
       <option value="dd">Sort: drawdown</option>
     </select>
     <select id="verdict" aria-label="Filter by verdict">
-      <option value="all">All verdicts</option>
+      <option value="all" selected>All verdicts</option>
       <option value="pass">Promoted</option>
       <option value="hold">Watch</option>
       <option value="fail">Rejected</option>
-      <option value="pending">Not yet tested</option>
+      <option value="blocked">Needs implementation</option>
+      <option value="implementing">Implementing now</option>
+      <option value="duplicate">Duplicates</option>
+      <option value="pending">Research queue</option>
+    </select>
+    <select id="style" aria-label="Filter by trading style">
+      <option value="all" selected>All styles</option>
+      <option value="scalping">Scalping</option>
+      <option value="intraday">Intraday</option>
+      <option value="day">Day trading</option>
+      <option value="swing">Swing</option>
+    </select>
+    <select id="sample" aria-label="Filter by sample quality">
+      <option value="all" selected>All samples</option>
+      <option value="100">100+ trades</option>
+      <option value="30">30+ trades</option>
+      <option value="thin">Thin sample: under 30</option>
+      <option value="thin-pf">High PF, thin sample</option>
+      <option value="best">Best candidates</option>
+    </select>
+    <select id="reason" aria-label="Filter by rejection reason">
+      <option value="all" selected>All reasons</option>
+      <option value="pf">PF below 1.20</option>
+      <option value="dd">Drawdown above 25%</option>
+      <option value="thin">Too few trades</option>
+      <option value="unstable">Not robust</option>
     </select>
   </div>
 
@@ -1247,7 +1349,35 @@ const cell = (v, cls="") => v == null
   ? `<div class="v na">—</div>`
   : `<div class="v ${cls}">${v}</div>`;
 
+// Harvested names and descriptions are somebody else's text, straight off the
+// internet, interpolated into innerHTML. Escape it.
+const esc = s => String(s ?? "").replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
 let DATA = null, activeSource = "All";
+let refreshTimer = null, nextRefreshMs = 20_000;
+let refreshAt = 0;
+
+setInterval(() => {
+  const seconds = Math.max(0, Math.ceil((refreshAt - Date.now()) / 1000));
+  document.getElementById("refresh-countdown").textContent =
+    refreshAt ? `refresh in ${seconds}s` : "refresh —";
+}, 250);
+
+function scheduleRefresh(delay = nextRefreshMs) {
+  clearTimeout(refreshTimer);
+  refreshAt = Date.now() + delay;
+  refreshTimer = setTimeout(async () => {
+    await load();                 // refresh data, never discard UI filters
+    nextRefreshMs = 20_000;       // unattended cadence after this refresh
+    scheduleRefresh();
+  }, delay);
+}
+
+function userInteracted() {
+  nextRefreshMs = 15_000;
+  scheduleRefresh(nextRefreshMs);
+}
 
 async function load() {
   try {
@@ -1257,11 +1387,22 @@ async function load() {
   } catch {
     DATA = SAMPLE;          // no engine output yet
   }
-  document.getElementById("banner").hidden = !DATA.sample;
+  document.getElementById("banner").hidden = DATA.sample !== true;
   document.getElementById("updated").textContent =
     DATA.generated ? "updated " + new Date(DATA.generated).toLocaleString()
                    : "no engine run yet";
   renderStats(); renderSources(); render();
+  loadWorkers();
+}
+
+async function loadWorkers() {
+  const get = async file => { try { const r = await fetch(file, {cache:"no-store"}); return r.ok ? r.json() : null; } catch { return null; } };
+  const [research, implementation] = await Promise.all([get("activity.json"), get("implementation-activity.json")]);
+  const item = (name, x) => x ? `<span><b>${name}</b> ${esc(x.status)}${x.current?.name ? ` · ${esc(x.current.name)}` : ""}</span>` : `<span><b>${name}</b> waiting</span>`;
+  document.getElementById("live-strip").innerHTML = item("Testing", research) + item("Implementation", implementation);
+  const history = await get("history.json") || [];
+  const max = Math.max(...history.map(x => x.tested + x.rejected + x.implemented), 1);
+  document.getElementById("history").innerHTML = history.map(x => `<span title="${esc(x.day)}: ${x.tested} tested · ${x.rejected} rejected · ${x.implemented} implemented" style="height:${Math.max(2, Math.round((x.tested+x.rejected+x.implemented)/max*30))}px"></span>`).join("");
 }
 
 function renderStats() {
@@ -1270,16 +1411,28 @@ function renderStats() {
   const pass = s.filter(x => x.verdict === "pass").length;
   const hold = s.filter(x => x.verdict === "hold").length;
   const fail = s.filter(x => x.verdict === "fail").length;
+  const blocked = s.filter(x => x.verdict === "blocked").length;
+  const duplicate = s.filter(x => x.verdict === "duplicate").length;
+  const implementing = s.filter(x => x.verdict === "implementing").length;
+  const ready = s.filter(x => x.verdict === "pending" && x.implementation_attempts > 0).length;
   const pend = s.filter(x => x.verdict === "pending").length;
   const trials = s.reduce((a, x) => a + (x.trials || 0), 0);
-  const box = (k, v, cls, sub) => `<div class="stat"><div class="k">${k}</div>
-      <div class="v ${cls}">${v}</div><div class="sub">${sub}</div></div>`;
+  const box = (k, v, cls, sub, filter) => filter
+    ? `<button class="stat" type="button" data-filter="${filter}"><div class="k">${k}</div>
+        <div class="v ${cls}">${v}</div><div class="sub">${sub}</div></button>`
+    : `<div class="stat"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="sub">${sub}</div></div>`;
   document.getElementById("stats").innerHTML =
-    box("Harvested", n, "", "collected from all sources") +
-    box("Not yet tested", pend, "", pend === n ? "nothing measured yet" : "awaiting the screen") +
-    box("Promoted", pass, "pass", "cleared every gate") +
-    box("Rejected", fail, "fail", `${n ? Math.round(fail / n * 100) : 0}% of the total`) +
+    box("Harvested", n, "", "show all strategies", "all") +
+    box("Not yet tested", pend, "", "open research queue", "pending") +
+    box("Promoted", pass, "pass", "show promoted", "pass") +
+    box("Rejected", fail, "fail", `${n ? Math.round(fail / n * 100) : 0}% of the total · show rejected`, "fail") +
+    box("Needs implementation", blocked, "", "translator or code work required", "blocked") +
+    box("Implementing", implementing, "", "being repaired now", "implementing") +
+    box("Implementation ready", ready, "", "verified code awaiting test", "pending") +
+    box("Duplicates", duplicate, "", "same source — not retested", "duplicate") +
     box("Trials spent", trials, "", "against the budget");
+  document.querySelectorAll("button.stat[data-filter]").forEach(b =>
+    b.onclick = () => { document.getElementById("verdict").value = b.dataset.filter; render(); });
 }
 
 function renderSources() {
@@ -1299,10 +1452,16 @@ function render() {
   const q = document.getElementById("q").value.trim().toLowerCase();
   const sortKey = document.getElementById("sort").value;
   const vf = document.getElementById("verdict").value;
+  const style = document.getElementById("style").value;
+  const sample = document.getElementById("sample").value;
+  const reason = document.getElementById("reason").value;
 
   let rows = DATA.strategies.filter(x =>
     (activeSource === "All" || x.source === activeSource) &&
     (vf === "all" || x.verdict === vf) &&
+    (style === "all" || matchesStyle(x, style)) &&
+    (sample === "all" || matchesSample(x, sample)) &&
+    (reason === "all" || matchesReason(x, reason)) &&
     (!q || (x.name + " " + x.asset_class + " " + (x.symbols || "")).toLowerCase().includes(q)));
 
   const dir = sortKey === "dd" ? 1 : -1;      // smaller drawdown is better
@@ -1321,41 +1480,121 @@ function render() {
     `showing ${rows.length} of ${DATA.strategies.length}`;
 }
 
+function baseStyle(x) {
+  const tf = String(x.test_timeframe || "").toLowerCase();
+  const mechanics = x.mechanics || [];
+  if (mechanics.includes("scalping") || /^(1|3|5|15|30)m$/.test(tf)) return "scalping";
+  if (/^(1|2)h$/.test(tf)) return "day";
+  if (tf === "4h" || tf === "1d" || tf === "1w") return "swing";
+  return "unknown";
+}
+function matchesStyle(x, wanted) {
+  const actual = baseStyle(x);
+  return wanted === "intraday" ? (actual === "scalping" || actual === "day") : actual === wanted;
+}
+function matchesSample(x, wanted) {
+  const n = x.trades || 0;
+  if (wanted === "thin") return x.pf != null && n < 30;
+  if (wanted === "thin-pf") return x.pf >= 1.2 && n < 30;
+  if (wanted === "best") return x.pf >= 1.2 && x.tpd >= .4 && x.max_dd <= .25 && n >= 100 && x.robustness?.stable;
+  return n >= Number(wanted);
+}
+function matchesReason(x, wanted) {
+  if (x.pf == null) return false;
+  if (wanted === "pf") return x.pf < 1.2;
+  if (wanted === "dd") return x.max_dd > .25;
+  if (wanted === "thin") return (x.trades || 0) < 30 || x.tpd < .2;
+  return !!x.robustness && !x.robustness.stable;
+}
+
 function card(x) {
-  const label = {pass: "Promoted", hold: "Watch", fail: "Rejected",
+  const label = {pass: "Promoted", hold: "Watch", fail: "Rejected", blocked: "Needs implementation", implementing: "Implementing", duplicate: "Duplicate",
                  pending: "Not tested"}[x.verdict] || "—";
+  const measured = x.pf != null && x.tested_from;
+  const unableToTest = x.verdict === "blocked";
+  const robust = x.robustness;
+  const style = baseStyle(x);
+  const matrix = (robust?.scenarios || []).map(s => {
+    const ok = s.available && s.pf >= 1.05 && s.max_dd <= .25 && s.trades >= 30;
+    const values = s.available ? `PF ${fmt.num(s.pf)} · DD ${fmt.pct(s.max_dd)} · ${s.trades} trades` : (s.detail || "unavailable");
+    return `<div class="${ok ? "pass" : "fail"}">${esc(s.name)}: ${esc(values)}</div>`;
+  }).join("");
+  const state = measured
+    ? (x.verdict === "pass" ? "Validated result — eligible for the next gate."
+       : "Test completed — it did not clear the research gates.")
+      : x.verdict === "implementing"
+      ? "Implementation worker is translating and verifying this source."
+      : x.verdict === "duplicate"
+      ? "Exact duplicate source. It was not retested or charged to the budget."
+      : unableToTest
+      ? "Could not be implemented automatically. No performance conclusion was made."
+      : x.has_source
+        ? "Ready for implementation and backtesting. No performance result yet."
+        : "Waiting for the strategy source before it can be tested.";
+  const shortReason = !measured ? state
+    : x.pf < 1.2 ? "PF below 1.20"
+    : x.max_dd > .25 ? "Drawdown above 25%"
+    : x.tpd < .2 ? "Too few trades"
+    : x.tpd < .4 ? "Frequency needs review"
+    : robust && !robust.stable ? "Not stable across scenarios"
+    : x.verdict === "pass" ? "Cleared research gates"
+    : "Research gates not cleared";
+  const audit = (x.audit || []).slice(-4).reverse().map(a => `<div>${esc(a.at)} · ${esc(a.event)}${a.detail ? ` — ${esc(a.detail)}` : ""}</div>`).join("");
+  const bad = (x.points || []).filter(p => !p.ok).slice(0, 1);
+  const good = (x.points || []).filter(p => p.ok).slice(0, 1);
+  const points = [...bad, ...good];
+  const asset = String(x.asset_class || "unknown").toLowerCase().replace(/[^a-z]/g, "");
+  const mech = m => String(m).toLowerCase().replace(/_/g, "-").replace(/[^a-z-]/g, "");
   return `<article class="card v-${x.verdict}">
     <div class="card-head">
       <div>
-        <h3>${x.name}</h3>
-        <div class="src">${x.source} · ${x.symbols || "—"}</div>
+        <h3>${esc(x.name)}</h3>
+        <div class="src">${esc(x.source)} · ${esc(x.symbols || "—")}</div>
       </div>
       <div class="score" style="--pct:${(x.score || 0) * 10}"><span>${x.score ?? "—"}</span></div>
     </div>
     <div class="chips">
       <span class="chip verdict">${label}</span>
-      <span class="chip">${x.asset_class}</span>
-      ${x.trials ? `<span class="chip">${x.trials} trials</span>` : ""}
-      ${(x.mechanics || []).map(m => `<span class="chip">${m.replace(/_/g, " ")}</span>`).join("")}
+      <span class="chip asset-${asset}">${esc(x.asset_class)}</span>
+      ${x.test_timeframe ? `<span class="chip">${esc(style === "day" ? "day trading" : style)} · ${esc(x.test_timeframe)}</span>` : ""}
+      ${x.verdict === "pending" && x.implementation_attempts > 0 ? `<span class="chip robust">implemented</span>` : ""}
+      ${measured && x.trials ? `<span class="chip">${x.trials} trials</span>` : ""}
+      ${robust ? `<span class="chip ${robust.stable ? "robust" : "fragile"}">${robust.stable ? "robust" : "fragile"} ${robust.passed}/${robust.coverage}</span>` : ""}
+      ${(x.mechanics || []).map(m => `<span class="chip mech-${mech(m)}">${esc(m.replace(/_/g, " "))}</span>`).join("")}
     </div>
-    <div class="metrics">
+    ${measured ? `<div class="metrics">
       <div class="m"><div class="k">PF</div>
         ${cell(fmt.num(x.pf), x.pf == null ? "" : x.pf >= 1.2 ? "good" : "bad")}</div>
       <div class="m"><div class="k">Trades/day</div>
-        ${cell(fmt.num(x.tpd), x.tpd == null ? "" : x.tpd >= 1 ? "good" : "bad")}</div>
-      <div class="m"><div class="k">Days to +10%</div>
-        ${cell(fmt.days(x.cagr), x.cagr == null ? "" : x.cagr > 0 ? "good" : "bad")}</div>
-      <div class="m"><div class="k">Max DD</div>${cell(fmt.pct(x.max_dd))}</div>
-      <div class="m"><div class="k">Win rate</div>${cell(fmt.pct(x.win_rate))}</div>
-      <div class="m"><div class="k">DSR</div>
-        ${cell(fmt.num(x.dsr), x.dsr == null ? "" : x.dsr >= 0.95 ? "good" : "bad")}</div>
-    </div>
-    ${x.note ? `<div class="note">${x.note}</div>` : ""}
+        ${cell(fmt.num(x.tpd), x.tpd == null ? "" : x.tpd >= 0.4 ? "good" : x.tpd >= 0.2 ? "warn" : "bad")}</div>
+      <div class="m"><div class="k">Max DD</div>
+        ${cell(fmt.pct(x.max_dd), x.max_dd == null ? "" : x.max_dd <= 0.25 ? "good" : "bad")}</div>
+    </div>` : ""}
+    <div class="headline ${x.verdict === "pass" ? "ok" : x.verdict === "pending" ? "" : "no"}">${esc(shortReason)}</div>
+    ${matrix ? `<details class="matrix"><summary>View all tested scenarios</summary><div class="scenario-list">${matrix}</div></details>` : ""}
+    ${audit ? `<details class="matrix"><summary>Audit trail</summary><div class="scenario-list">${audit}</div></details>` : ""}
+    ${x.verdict === "blocked" ? `<button class="retry" data-retry="${esc(x.id)}">Retry implementation</button>` : ""}
   </article>`;
 }
 
 document.getElementById("q").oninput = render;
 document.getElementById("sort").onchange = render;
 document.getElementById("verdict").onchange = render;
-load();
+document.getElementById("style").onchange = render;
+document.getElementById("sample").onchange = render;
+document.getElementById("reason").onchange = render;
+document.getElementById("refresh-now").onclick = async () => {
+  await load(); nextRefreshMs = 20_000; scheduleRefresh();
+};
+document.getElementById("grid").onclick = async event => {
+  const id = event.target.dataset.retry;
+  if (!id) return;
+  event.target.disabled = true; event.target.textContent = "Queued";
+  try { await fetch("/api/retry-implementation", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({id})}); await load(); }
+  catch { event.target.textContent = "Retry failed"; }
+};
+document.addEventListener("pointerdown", userInteracted, {passive: true});
+document.addEventListener("keydown", userInteracted);
+document.addEventListener("input", userInteracted);
+load().then(() => scheduleRefresh());
 </script>

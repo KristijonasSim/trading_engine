@@ -47,6 +47,7 @@ import json
 import os
 import re
 import textwrap
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,6 +55,19 @@ import numpy as np
 import pandas as pd
 
 CACHE = Path(__file__).resolve().parent.parent / "state" / "translations"
+
+@contextmanager
+def _translation_lock(cache_dir: Path):
+    """One Claude translation at a time across both engine workers."""
+    import fcntl
+    lock = cache_dir.parent / "translation.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 SYSTEM = """You translate TradingView Pine Script into Python signal functions.
 
@@ -292,23 +306,39 @@ class Translator:
         h = hashlib.sha256(f"{self.model}|{SYSTEM}|{name}|{source}".encode())
         return h.hexdigest()[:24]
 
+    def cached(self, *, name: str, source: str) -> bool:
+        """Whether this exact source already has a saved translation.
+
+        The runner uses this only for queue priority: cached code still goes
+        through the full verifier and backtest, but does not need a new
+        implementation attempt first.
+        """
+        return (self.cache_dir / f"{self._key(name, source)}.py").exists()
+
+    def cache_code(self, *, name: str, source: str, code: str) -> None:
+        """Store a verifier-approved implementation under its canonical key."""
+        (self.cache_dir / f"{self._key(name, source)}.py").write_text(code)
+
     def translate(self, *, name: str, source: str, author: str = "",
                   description: str = "") -> str:
         path = self.cache_dir / f"{self._key(name, source)}.py"
         if path.exists():
             return path.read_text()
 
-        client = self._client_or_raise()
-        msg = client.messages.create(
-            model=self.model, max_tokens=4000, temperature=0,
-            system=SYSTEM,
-            messages=[{"role": "user", "content": USER.format(
-                name=name, author=author, description=description or "—",
-                source=source[:24000])}])
-        code = msg.content[0].text.strip()
-        code = re.sub(r"^```(?:python)?\s*|\s*```$", "", code).strip()
-        path.write_text(code)
-        return code
+        with _translation_lock(self.cache_dir):
+            if path.exists():
+                return path.read_text()
+            client = self._client_or_raise()
+            msg = client.messages.create(
+                model=self.model, max_tokens=4000, temperature=0,
+                system=SYSTEM,
+                messages=[{"role": "user", "content": USER.format(
+                    name=name, author=author, description=description or "—",
+                    source=source[:24000])}])
+            code = msg.content[0].text.strip()
+            code = re.sub(r"^```(?:python)?\s*|\s*```$", "", code).strip()
+            path.write_text(code)
+            return code
 
 
 class ClaudeCLITranslator(Translator):
@@ -357,18 +387,21 @@ class ClaudeCLITranslator(Translator):
         # off, the key claims a model the CLI may not have used, and the
         # "same Pine always yields the same Python" guarantee quietly becomes
         # "same Pine yields whatever the CLI default was that week".
-        proc = subprocess.run(
-            [self.binary, "-p", prompt, "--model", self.model],
-            capture_output=True, text=True, timeout=self.timeout)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"claude -p exited {proc.returncode}: {proc.stderr[:300]}")
-        code = re.sub(r"^```(?:python)?\s*|\s*```$", "",
-                      proc.stdout.strip()).strip()
-        if "def signals" not in code:
-            raise ValueError(f"no signals() in output: {code[:200]}")
-        path.write_text(code)
-        return code
+        with _translation_lock(self.cache_dir):
+            if path.exists():
+                return path.read_text()
+            proc = subprocess.run(
+                [self.binary, "-p", prompt, "--model", self.model],
+                capture_output=True, text=True, timeout=self.timeout)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"claude -p exited {proc.returncode}: {proc.stderr[:300]}")
+            code = re.sub(r"^```(?:python)?\s*|\s*```$", "",
+                          proc.stdout.strip()).strip()
+            if "def signals" not in code:
+                raise ValueError(f"no signals() in output: {code[:200]}")
+            path.write_text(code)
+            return code
 
 
 def best_translator(cache_dir: Path | None = None) -> Translator | None:
