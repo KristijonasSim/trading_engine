@@ -21,6 +21,7 @@ def _now() -> str:
 
 def main() -> int:
     interval = max(float(os.environ.get("WORKER_INTERVAL", "15")), 2.0)
+    harvest = os.environ.get("HARVEST", "1") != "0"
     started = _now()
     total = {"considered": 0, "translated": 0, "tested": 0,
              "promoted": 0, "rejected": 0, "blocked": 0}
@@ -37,7 +38,7 @@ def main() -> int:
                 activity.write(status="running", started=started, current=current,
                                summary={**total, "finished": _now()})
 
-            result = run_pass(limit=1, progress=progress)
+            result = run_pass(limit=1, harvest=harvest, progress=progress)
             for key in total:
                 total[key] += getattr(result, key)
             history.record(tested=result.tested, rejected=result.rejected, promoted=result.promoted)
