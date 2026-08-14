@@ -69,11 +69,17 @@ def run_once(store: CandidateStore | None = None) -> dict:
             df = _load_bars(cfg["symbols"][0], cfg)
             checked = verify(code, df)
         except Exception as exc:  # operational failure; do not claim a strategy result
+            # Keep the MESSAGE, not just the class. 172 rows once read only
+            # "RuntimeError", which is indistinguishable between a rate-limited
+            # `claude -p`, expired auth, and a genuinely untranslatable script —
+            # three problems with three different fixes, and no way to tell them
+            # apart after the fact.
+            detail = f"{type(exc).__name__}: {exc}".strip().replace("\n", " ")[:300]
             st.update_result(row["id"], status="blocked", verdict="blocked", implementation_attempts=attempt,
-                             note=f"implementation attempt {attempt}/{MAX_IMPLEMENTATION_ATTEMPTS} failed: {type(exc).__name__}")
-            st.append_audit(row["id"], "implementation failed", type(exc).__name__)
+                             note=f"implementation attempt {attempt}/{MAX_IMPLEMENTATION_ATTEMPTS} failed: {detail}")
+            st.append_audit(row["id"], "implementation failed", detail)
             to_dashboard(st)
-            return {"status": "retry", "id": row["id"], "reason": type(exc).__name__}
+            return {"status": "retry", "id": row["id"], "reason": detail}
         if checked.ok:
             # Make the repaired code the canonical cache entry the test worker
             # will read next time, then return it to its normal queue.

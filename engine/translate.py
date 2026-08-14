@@ -56,6 +56,15 @@ import pandas as pd
 
 CACHE = Path(__file__).resolve().parent.parent / "state" / "translations"
 
+# Pine -> Python is mechanical: the grammar is fixed and `verify()` rejects
+# anything that does not run, so Opus buys nothing here and costs ~5x. The
+# translator runs on the claude.ai SUBSCRIPTION via `claude -p`, so this is a
+# session-quota lever, not a billing one. Override to re-test a harder model.
+#
+# The cache key includes the model, so changing this re-pays every translation
+# already stored under the old one.
+MODEL = os.environ.get("TRANSLATOR_MODEL", "claude-sonnet-5")
+
 @contextmanager
 def _translation_lock(cache_dir: Path):
     """One Claude translation at a time across both engine workers."""
@@ -284,7 +293,7 @@ class Translator:
     unless the model or the prompt changes.
     """
 
-    def __init__(self, model: str = "claude-opus-5", cache_dir: Path | None = None):
+    def __init__(self, model: str = MODEL, cache_dir: Path | None = None):
         self.model = model
         self.cache_dir = Path(cache_dir or CACHE)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -360,7 +369,7 @@ class ClaudeCLITranslator(Translator):
     a non-zero exit, expired auth is the first thing to check.
     """
 
-    def __init__(self, model: str = "claude-opus-5", cache_dir: Path | None = None,
+    def __init__(self, model: str = MODEL, cache_dir: Path | None = None,
                  binary: str = "claude", timeout: int = 300):
         super().__init__(model=model, cache_dir=cache_dir)
         self.binary = binary

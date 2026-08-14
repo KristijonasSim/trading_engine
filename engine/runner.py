@@ -489,6 +489,11 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
     n_pass = _pass_no()
     ready = _work_queue(st, translator=translator)
     if harvest and len(ready) < HARVEST_FLOOR:
+        # Announce the harvest BEFORE the network call, not after: it is the
+        # slowest thing a pass does, and without this the console showed a
+        # frozen "testing" stage for minutes with nothing apparently running.
+        if progress:
+            progress({"stage": "harvesting", "name": "TradingView search"})
         try:
             from .sources.tradingview import TERMS, harvest as tv_harvest
             res.harvest = tv_harvest(offset=(n_pass * 6) % len(TERMS),
@@ -628,8 +633,12 @@ def run_pass(limit: int = 5, use_llm: bool | None = None,
             cells, bar_from, bar_to = _backtest(code, cfg, cost=COSTS[asset])
         except Exception as e:                                   # noqa: BLE001
             res.errors.append(f"{cid}: backtest: {type(e).__name__}: {e}")
+            # The message goes in the STORE too, not just this pass's error
+            # list: res.errors dies with the process, the note is what a human
+            # reads days later off the dashboard.
+            detail = f"{type(e).__name__}: {e}".strip().replace("\n", " ")[:300]
             st.update_result(cid, status="blocked", verdict="blocked", score=None,
-                             note=f"backtest raised: {type(e).__name__}")
+                             note=f"backtest raised: {detail}")
             res.blocked += 1
             continue
 

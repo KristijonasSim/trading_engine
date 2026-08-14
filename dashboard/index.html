@@ -88,8 +88,34 @@
   .refresh-now { border:1px solid var(--line); border-radius:4px; padding:2px 6px; background:var(--surface); color:var(--ink-2); cursor:pointer; font:10px var(--mono); }
   .refresh-now:hover { color:var(--accent); border-color:var(--accent); }
   .method { margin: 10px 0 0; color: var(--ink-3); font: 11px var(--mono); }
-  .live-strip { display:flex; flex-wrap:wrap; gap:8px 18px; margin-top:12px; padding:8px 11px; border:1px solid var(--line-soft); border-radius:7px; color:var(--ink-2); font:11px var(--mono); }
-  .live-strip b { color:var(--accent); font-weight:600; }
+  /* Live pipeline. Green means a worker is doing this RIGHT NOW — the boxes
+     read state from the two activity JSONs, which the workers rewrite each
+     iteration. A stale file is treated as stopped, not as running: activity
+     .json survives `systemctl stop`, so trusting it blindly would leave the
+     console claiming work that no process is doing. */
+  .pipeline { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; margin-top:12px; }
+  .stage { padding:9px 11px; border:1px solid var(--line-soft); border-radius:8px;
+           background:var(--surface); transition:border-color .35s, box-shadow .35s, background .35s; }
+  .stage .st-k { display:flex; align-items:center; gap:7px;
+                 font:600 10.5px var(--mono); letter-spacing:.07em; text-transform:uppercase; color:var(--ink-3); }
+  .stage .dot { width:7px; height:7px; border-radius:50%; background:var(--ink-3); flex:none; }
+  .stage .st-v { margin-top:5px; font-size:12.5px; color:var(--ink-2); }
+  .stage .st-now { margin-top:2px; font:11px var(--mono); color:var(--ink-3);
+                   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .stage.live { border-color:color-mix(in srgb, var(--pass) 55%, transparent); background:var(--pass-bg);
+                box-shadow:0 0 0 1px color-mix(in srgb, var(--pass) 20%, transparent),
+                           0 0 20px -5px color-mix(in srgb, var(--pass) 55%, transparent); }
+  .stage.live .st-k, .stage.live .st-v { color:var(--pass); }
+  .stage.live .st-v { font-weight:640; }
+  .stage.live .dot { background:var(--pass); animation:livepulse 1.6s ease-in-out infinite; }
+  .stage.paused .dot { background:var(--hold); }
+  .stage.paused .st-v { color:var(--hold); }
+  .stage.off { opacity:.7; }
+  @keyframes livepulse {
+    0%,100% { opacity:1;  box-shadow:0 0 0 0 color-mix(in srgb, var(--pass) 55%, transparent); }
+    50%     { opacity:.5; box-shadow:0 0 0 5px transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) { .stage.live .dot { animation:none; } }
   .history { display:flex; align-items:end; gap:5px; min-height:30px; margin-top:9px; }
   .history span { width:18px; min-height:2px; background:var(--accent); border-radius:2px 2px 0 0; opacity:.8; }
 
@@ -287,7 +313,7 @@
     <div class="top-meta"><div class="updated" id="updated">—</div><div class="refresh-line"><div class="refresh-countdown" id="refresh-countdown">refresh —</div><button class="refresh-now" id="refresh-now" type="button">Refresh</button></div></div>
   </header>
   <div class="method">Rolling 5-year window · realistic fees and slippage · results are research only</div>
-  <div class="live-strip" id="live-strip">Loading worker status…</div>
+  <div class="pipeline" id="pipeline"></div>
   <div class="history" id="history" title="Daily tested + rejected + implemented activity"></div>
 
   <div class="banner" id="banner" hidden>
@@ -1403,8 +1429,39 @@ async function load() {
 async function loadWorkers() {
   const get = async file => { try { const r = await fetch(file, {cache:"no-store"}); return r.ok ? r.json() : null; } catch { return null; } };
   const [research, implementation] = await Promise.all([get("activity.json"), get("implementation-activity.json")]);
-  const item = (name, x) => x ? `<span><b>${name}</b> ${esc(x.status)}${x.current?.name ? ` · ${esc(x.current.name)}` : ""}</span>` : `<span><b>${name}</b> waiting</span>`;
-  document.getElementById("live-strip").innerHTML = item("Testing", research) + item("Implementation", implementation);
+
+  // A worker that stopped leaves its last activity.json behind, forever
+  // claiming "running". Anything older than this is reported as stopped.
+  // Must exceed ClaudeCLITranslator's 300s timeout: the worker publishes its
+  // state BEFORE the call and writes nothing until it returns, so a healthy
+  // worker legitimately goes quiet for the whole of that window.
+  const STALE_MS = 420000;
+  const fresh = x => !!x && x.updated && (Date.now() - new Date(x.updated).getTime()) < STALE_MS;
+  const alive = x => fresh(x) && x.status === "running";
+  const stage = x => (x?.current?.stage || "").toLowerCase();
+
+  // The research worker is one process that both harvests and tests, so its
+  // stage — not its status — says which of the two is on screen now.
+  const harvesting = alive(research) && stage(research).includes("harvest");
+  const testing    = alive(research) && !harvesting && !stage(research).includes("last completed");
+  const implementing = alive(implementation);
+
+  // `src` is the activity file this stage reads, so a stopped worker greys
+  // out its own stages and cannot be confused with an idle one.
+  const box = (label, on, src, live, idle, now) => {
+    const cls = on ? "live" : (fresh(src) ? "paused" : "off");
+    const state = on ? live : (cls === "paused" ? idle : "worker stopped");
+    return `<div class="stage ${cls}">
+        <div class="st-k"><span class="dot"></span>${label}</div>
+        <div class="st-v">${esc(state)}</div>
+        <div class="st-now">${on && now ? esc(now) : "&nbsp;"}</div>
+      </div>`;
+  };
+
+  document.getElementById("pipeline").innerHTML =
+    box("Harvesting", harvesting, research, "searching TradingView", "not harvesting", research?.current?.name) +
+    box("Implementation", implementing, implementation, "translating & verifying", "waiting for work", implementation?.current?.name) +
+    box("Testing", testing, research, "backtesting", "waiting for work", research?.current?.name);
   const history = await get("history.json") || [];
   const max = Math.max(...history.map(x => x.tested + x.rejected + x.implemented), 1);
   document.getElementById("history").innerHTML = history.map(x => `<span title="${esc(x.day)}: ${x.tested} tested · ${x.rejected} rejected · ${x.implemented} implemented" style="height:${Math.max(2, Math.round((x.tested+x.rejected+x.implemented)/max*30))}px"></span>`).join("");
