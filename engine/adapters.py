@@ -72,6 +72,20 @@ def detect(code: str) -> str:
 
 
 # ----------------------------------------------------------------- freqtrade stubs
+def _numpy_compat() -> None:
+    """Restore aliases NumPy 2.0 removed.
+
+    `np.NaN`, `np.NAN` and `np.Inf` were dropped in NumPy 2.0. Most of this
+    corpus was written before that, so 15 strategies died on an AttributeError
+    that has nothing to do with their logic. Re-adding the aliases is exactly
+    what the strategies expect and changes no behaviour for anything else.
+    """
+    for name, val in (("NaN", np.nan), ("NAN", np.nan),
+                      ("Inf", np.inf), ("infty", np.inf)):
+        if not hasattr(np, name):
+            setattr(np, name, val)
+
+
 def _stub_modules() -> dict[str, types.ModuleType]:
     """A minimal fake freqtrade surface, enough to import a strategy class.
 
@@ -79,6 +93,7 @@ def _stub_modules() -> dict[str, types.ModuleType]:
     hyperopt spaces, protections — raises on import and the candidate is
     reported unsupported instead of being half-executed.
     """
+    _numpy_compat()
     mods: dict[str, types.ModuleType] = {}
 
     def mod(name: str) -> types.ModuleType:
@@ -106,10 +121,14 @@ def _stub_modules() -> dict[str, types.ModuleType]:
         The numeric dunders keep bare use working, so both spellings agree.
         """
 
-        __slots__ = ("value",)
+        __slots__ = ("value", "range")
 
-        def __init__(self, value):
+        def __init__(self, value, rng=()):
             self.value = value
+            # Strategies iterate `param.range` when building indicator sets.
+            # Outside hyperopt freqtrade yields just the chosen value, so a
+            # single-element range keeps the loop meaningful instead of empty.
+            self.range = rng or ((value,) if value is not None else ())
 
         # comparisons and arithmetic delegate to the wrapped default
         def __float__(self): return float(self.value)
@@ -146,6 +165,22 @@ def _stub_modules() -> dict[str, types.ModuleType]:
             return _Param(k["default"])
         return _Param(a[0] if a else None)
 
+    class _DataProvider:
+        """Stand-in for `self.dp`. Strategies reach for informative pairs and
+        orderbooks through it; there is no second timeframe and no live book
+        here, so every accessor returns empty rather than raising."""
+
+        def get_pair_dataframe(self, *a, **k): return pd.DataFrame()
+        def get_analyzed_dataframe(self, *a, **k): return pd.DataFrame(), None
+        def orderbook(self, *a, **k): return {"bids": [], "asks": []}
+        def ticker(self, *a, **k): return {}
+        def current_whitelist(self): return []
+        def market(self, *a, **k): return {}
+        @property
+        def runmode(self): return "backtest"
+
+    IStrategy.dp = _DataProvider()
+
     fs = mod("freqtrade.strategy")
     fs.IStrategy = IStrategy
     for n in ("IntParameter", "DecimalParameter", "RealParameter",
@@ -153,7 +188,24 @@ def _stub_modules() -> dict[str, types.ModuleType]:
         setattr(fs, n, _param)
     fs.merge_informative_pair = lambda d, *a, **k: d
     fs.stoploss_from_open = lambda *a, **k: -0.10
+    fs.stoploss_from_absolute = lambda *a, **k: -0.10
     fs.informative = lambda *a, **k: (lambda f: f)
+    fs.timeframe_to_minutes = lambda tf="1h", *a, **k: 60
+
+    # `from freqtrade.strategy.interface import IStrategy` is the single most
+    # common import in this corpus — 80 of 154 adapter failures were this one
+    # missing submodule. Registering `freqtrade.strategy` alone is not enough:
+    # Python resolves the dotted path through sys.modules, so each segment has
+    # to exist as its own entry.
+    fsi = mod("freqtrade.strategy.interface")
+    fsi.IStrategy = IStrategy
+    fs.interface = fsi
+
+    fsh = mod("freqtrade.strategy.hyper")
+    for n in ("IntParameter", "DecimalParameter", "RealParameter",
+              "CategoricalParameter", "BooleanParameter"):
+        setattr(fsh, n, _param)
+    fs.hyper = fsh
 
     ft = mod("freqtrade")
     ft.strategy = fs
@@ -201,6 +253,19 @@ def _stub_modules() -> dict[str, types.ModuleType]:
     q.rolling_mean = q.sma
     q.rolling_std = lambda s, window=20, **k: pd.Series(s).rolling(window, min_periods=window).std()
     q.returns = lambda s, **k: pd.Series(s).pct_change()
+    q.atr = lambda bars, window=14, **k: (
+        pd.concat([bars["high"] - bars["low"],
+                   (bars["high"] - bars["close"].shift()).abs(),
+                   (bars["low"] - bars["close"].shift()).abs()],
+                  axis=1).max(axis=1).rolling(window, min_periods=window).mean())
+    q.rsi = lambda s, window=14, **k: (
+        100 - 100 / (1 + pd.Series(s).diff().clip(lower=0).rolling(window).mean()
+                     / pd.Series(s).diff().clip(upper=0).abs().rolling(window).mean()
+                     .replace(0, 1e-9)))
+    q.heikinashi = lambda bars, **k: bars
+    q.zscore = lambda s, window=20, **k: (
+        (pd.Series(s) - pd.Series(s).rolling(window).mean())
+        / pd.Series(s).rolling(window).std().replace(0, 1e-9))
 
     return mods
 
