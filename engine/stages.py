@@ -178,6 +178,15 @@ def evaluate(cid: str, symbols: list[str]) -> dict:
     code = pysource.source(cid)
     if code is None:
         return {"id": cid, "stage": "no-source", "passed": False}
+    # Stored candidates never pass back through adapt(), so the dependency check
+    # has to run here too. Without it a strategy needing pandas_ta is re-executed
+    # every pass, crashes, and is recorded as "raised on real data" — which reads
+    # as a broken strategy rather than a missing library we cannot install.
+    from .adapters import unsupported_reason
+    why = unsupported_reason(code)
+    if why:
+        return {"id": cid, "stage": "unsupported", "passed": False,
+                "reason": f"unsupported here: {why}"}
     try:
         with _deadline(EVAL_TIMEOUT_S):
             return _evaluate(cid, code, symbols)

@@ -105,6 +105,7 @@ class Candidate:
     popularity: int = 0
     source_quality: int = 1
     has_source: bool = False
+    fingerprint: str | None = None
     mechanics: list[str] = field(default_factory=list)
     harvested: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -183,6 +184,12 @@ _MIGRATIONS = [("trades", "INTEGER DEFAULT 0"),
                ("duplicate_of", "TEXT")]
 _MIGRATIONS.append(("audit", "TEXT"))
 _MIGRATIONS.append(("source_quality", "INTEGER DEFAULT 1"))
+# Whitespace-insensitive digest of the stored implementation. Persisted rather
+# than recomputed per pass: dedupe that lives only in a run-local set forgets
+# everything between passes, so the same strategy harvested from a second repo
+# on a later pass is stored again. BinHV45 appeared twice with an IDENTICAL
+# fingerprint for exactly this reason.
+_MIGRATIONS.append(("fingerprint", "TEXT"))
 
 
 class CandidateStore:

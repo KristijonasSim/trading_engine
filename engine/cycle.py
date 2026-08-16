@@ -21,6 +21,7 @@ cleared two clean windows and nothing more.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -50,6 +51,12 @@ EVALUATE_PER_PASS = 40
 # queue it was meant to fill.
 HARVEST_WHEN_PENDING_BELOW = 60
 
+# Master switch, OFF by Kristijonas' instruction 2026-08-16: collect nothing new,
+# work through what is already stored. Collecting more was never the constraint —
+# two thirds of the current corpus cannot be run here at all, so more files of
+# the same kind would just grow the unsupported pile. Set HARVEST=1 to re-enable.
+HARVEST_ENABLED = os.environ.get("HARVEST", "0") == "1"
+
 
 def _pending(st: CandidateStore) -> int:
     from . import pysource
@@ -64,7 +71,10 @@ def run(*, harvest: bool | None = None, evaluate: bool = True) -> dict:
     out: dict = {"at": started, "pending": pending}
 
     if harvest is None:
-        harvest = pending < HARVEST_WHEN_PENDING_BELOW
+        harvest = HARVEST_ENABLED and pending < HARVEST_WHEN_PENDING_BELOW
+    if not HARVEST_ENABLED:
+        out["harvest"] = {"skipped": "harvesting disabled (set HARVEST=1)"}
+        harvest = False
     if not harvest:
         out["harvest"] = {"skipped": f"{pending} already queued"}
 
@@ -77,7 +87,8 @@ def run(*, harvest: bool | None = None, evaluate: bool = True) -> dict:
         # reported the LAST repo rather than the pass, and the same strategy
         # forked into two repos was stored twice.
         from .harvest_github import HarvestStats
-        agg, seen = HarvestStats(), set()
+        from .harvest_github import stored_fingerprints
+        agg, seen = HarvestStats(), stored_fingerprints(st)
         stopped = None
         for repo in SEED_REPOS:
             try:

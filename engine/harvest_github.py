@@ -153,6 +153,25 @@ def _blob(repo: str, branch: str, path: str) -> str:
         return r.read().decode("utf-8", "replace")
 
 
+def stored_fingerprints(store: CandidateStore) -> set[str]:
+    """Every fingerprint already in the store.
+
+    Dedupe has to start from this, not from an empty set. A run-local set forgets
+    everything between passes, so a strategy harvested from one repo today and a
+    second repo tomorrow is stored twice — which is exactly how two byte-identical
+    BinHV45 rows ended up in the console, both counted, both tested.
+    """
+    import sqlite3
+    con = sqlite3.connect(store.path)
+    try:
+        return {r[0] for r in con.execute(
+            "select fingerprint from candidates where fingerprint is not null")}
+    except sqlite3.OperationalError:      # column not migrated yet
+        return set()
+    finally:
+        con.close()
+
+
 def _ingest_code(store: CandidateStore, *, cid: str, name: str, url: str,
                  code: str, author: str, source: str,
                  seen_fp: set[str], stats: HarvestStats) -> None:
@@ -161,13 +180,18 @@ def _ingest_code(store: CandidateStore, *, cid: str, name: str, url: str,
     if not kind:
         stats.unsupported += 1
         return
-    fp = pysource.fingerprint(code)
-    if fp in seen_fp:
-        stats.duplicate += 1
-        return
     result = adapt(code)
     if not result.ok:
         stats.unsupported += 1
+        return
+    # Fingerprint the ADAPTED source, not the raw file. The store holds wrappers,
+    # so `stored_fingerprints()` returns wrapper digests — comparing a raw-file
+    # digest against those never matches and dedupe silently does nothing.
+    # adapt() is deterministic, so the wrapper digest identifies the strategy
+    # just as well.
+    fp = pysource.fingerprint(result.code)
+    if fp in seen_fp:
+        stats.duplicate += 1
         return
     seen_fp.add(fp)
     pysource.store(cid, result.code)
@@ -176,7 +200,7 @@ def _ingest_code(store: CandidateStore, *, cid: str, name: str, url: str,
         description=f"{result.kind} strategy adapted deterministically — no LLM",
         asset_class=classify_asset(None),
         mechanics=tag_mechanics(name, code[:2000]),
-        has_source=True, source_quality=2,
+        has_source=True, source_quality=2, fingerprint=fp,
     )
     store.upsert(c)
     stats.stored += 1
@@ -186,7 +210,7 @@ def harvest_repo(repo: str, store: CandidateStore, *, limit: int = 120,
                  stats: HarvestStats | None = None,
                  seen_fp: set[str] | None = None) -> HarvestStats:
     stats = stats or HarvestStats()
-    seen_fp = seen_fp if seen_fp is not None else set()
+    seen_fp = seen_fp if seen_fp is not None else stored_fingerprints(store)
     try:
         branch, blobs = _tree(repo)
         files = sorted((t for t in blobs if _wanted(t["path"])),
@@ -219,7 +243,7 @@ def harvest_local(folder: str | Path, store: CandidateStore,
                   seen_fp: set[str] | None = None) -> HarvestStats:
     """Ingest .py strategies from a local directory. No network, no limits."""
     stats = stats or HarvestStats()
-    seen_fp = seen_fp if seen_fp is not None else set()
+    seen_fp = seen_fp if seen_fp is not None else stored_fingerprints(store)
     root = Path(folder)
     for f in sorted(root.rglob("*.py")):
         try:
@@ -236,7 +260,7 @@ def harvest_local(folder: str | Path, store: CandidateStore,
 
 def run(repos: list[str] | None = None, *, limit: int = 40) -> dict:
     store = CandidateStore()
-    stats, seen = HarvestStats(), set()
+    stats, seen = HarvestStats(), stored_fingerprints(store)
     for repo in (repos or SEED_REPOS):
         try:
             harvest_repo(repo, store, limit=limit, stats=stats, seen_fp=seen)

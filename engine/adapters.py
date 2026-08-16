@@ -35,6 +35,7 @@ it depending on which side of the normalisation it lands.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 import types
 from dataclasses import dataclass
@@ -262,7 +263,77 @@ def _stub_modules() -> dict[str, types.ModuleType]:
         100 - 100 / (1 + pd.Series(s).diff().clip(lower=0).rolling(window).mean()
                      / pd.Series(s).diff().clip(upper=0).abs().rolling(window).mean()
                      .replace(0, 1e-9)))
-    q.heikinashi = lambda bars, **k: bars
+    def heikinashi(bars, **k):
+        """The real Heikin-Ashi transform.
+
+        This stub previously returned `bars` unchanged. 74 strategies in the
+        corpus call it, and every one of them was silently backtested on ORDINARY
+        candles while its entry logic was written for smoothed ones — a wrong
+        answer that runs, which is the exact failure mode this engine exists to
+        prevent. ha_open is recursive, so it is built iteratively rather than
+        vectorised.
+        """
+        o, h, l, c = (bars["open"].to_numpy(float), bars["high"].to_numpy(float),
+                      bars["low"].to_numpy(float), bars["close"].to_numpy(float))
+        ha_c = (o + h + l + c) / 4.0
+        ha_o = np.empty_like(ha_c)
+        if len(ha_c):
+            ha_o[0] = (o[0] + c[0]) / 2.0
+            for i in range(1, len(ha_c)):
+                ha_o[i] = (ha_o[i - 1] + ha_c[i - 1]) / 2.0
+        return pd.DataFrame({"open": ha_o, "close": ha_c,
+                             "high": np.maximum.reduce([h, ha_o, ha_c]),
+                             "low": np.minimum.reduce([l, ha_o, ha_c])},
+                            index=bars.index)
+
+    def _wma(s, n):
+        n = max(int(n), 1)
+        w = np.arange(1, n + 1, dtype=float)
+        return pd.Series(s).rolling(n).apply(
+            lambda x: np.dot(x, w) / w.sum(), raw=True)
+
+    q.heikinashi = heikinashi
+    q.hull_moving_average = lambda s, window=14, **k: _wma(
+        2 * _wma(s, int(window) // 2) - _wma(s, window), max(int(window ** 0.5), 1))
+    q.rolling_vwap = lambda bars, window=200, **k: (
+        (typical_price(bars) * bars["volume"]).rolling(window).sum()
+        / bars["volume"].rolling(window).sum().replace(0, 1e-9))
+    q.awesome_oscillator = lambda bars, fast=5, slow=34, **k: (
+        ((bars["high"] + bars["low"]) / 2).rolling(fast).mean()
+        - ((bars["high"] + bars["low"]) / 2).rolling(slow).mean())
+
+    def keltner_channel(bars, window=14, mult=2.0, **k):
+        mid = typical_price(bars).rolling(window).mean()
+        atr = q.atr(bars, window)
+        return pd.DataFrame({"upper": mid + mult * atr, "mid": mid,
+                             "lower": mid - mult * atr})
+
+    def chopiness(bars, window=14, **k):
+        tr = q.true_range(bars)
+        rng = (bars["high"].rolling(window).max()
+               - bars["low"].rolling(window).min()).replace(0, 1e-9)
+        return 100 * np.log10(tr.rolling(window).sum() / rng) / np.log10(window)
+
+    q.keltner_channel = keltner_channel
+    q.chopiness = chopiness
+    q.macd = lambda s, fast=12, slow=26, smooth=9, **k: pd.DataFrame({
+        "macd": (m := pd.Series(s).ewm(span=fast, adjust=False).mean()
+                 - pd.Series(s).ewm(span=slow, adjust=False).mean()),
+        "signal": (sg := m.ewm(span=smooth, adjust=False).mean()),
+        "histogram": m - sg})
+    q.stoch = lambda bars, window=14, **k: pd.DataFrame({
+        "k": 100 * (bars["close"] - bars["low"].rolling(window).min())
+        / (bars["high"].rolling(window).max()
+           - bars["low"].rolling(window).min()).replace(0, 1e-9)})
+    q.true_range = lambda bars, **k: pd.concat([
+        bars["high"] - bars["low"],
+        (bars["high"] - bars["close"].shift()).abs(),
+        (bars["low"] - bars["close"].shift()).abs()], axis=1).max(axis=1)
+    q.rolling_min = lambda s, window=20, **k: pd.Series(s).rolling(window).min()
+    q.rolling_max = lambda s, window=20, **k: pd.Series(s).rolling(window).max()
+    q.vwap = lambda bars, **k: (
+        (typical_price(bars) * bars["volume"]).cumsum()
+        / bars["volume"].cumsum().replace(0, 1e-9))
     q.zscore = lambda s, window=20, **k: (
         (pd.Series(s) - pd.Series(s).rolling(window).mean())
         / pd.Series(s).rolling(window).std().replace(0, 1e-9))
@@ -382,6 +453,51 @@ def signals(df):
 '''
 
 
+# Third-party libraries this corpus reaches for that are NOT installed here and
+# cannot be faked. Approximating `pandas_ta.squeeze` or `finta.WTO` would run and
+# produce a number that is not what the author wrote — the exact failure this
+# engine exists to avoid. A strategy needing one of these is UNSUPPORTED, which
+# is an honest label; letting it crash mid-backtest and recording "raised on real
+# data" reads as a broken strategy instead of a missing dependency.
+MISSING_LIBS = ("pandas_ta", "finta", "skopt", "pmdarima", "sklearn",
+                "statsmodels", "tensorflow", "torch", "xgboost", "lightgbm")
+
+# Multi-timeframe machinery. There is one timeframe of bars here, so a strategy
+# built on an informative pair cannot be evaluated faithfully. Substituting the
+# base frame would silently answer a different question.
+# NOT `informative_pairs`: that method is part of the base IStrategy interface
+# and nearly every strategy defines it, usually returning []. Matching on it
+# marked 100 of 211 candidates unsupported, most of which use a single
+# timeframe perfectly well. Only actual CONSUMPTION of a second frame counts.
+INFORMATIVE_MARKERS = ("get_pair_dataframe(", "merge_informative_pair(",
+                       "@informative")
+
+
+def unsupported_reason(code: str) -> str:
+    """Why this strategy cannot be run here, or '' if it can."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return f"does not parse: {e.msg}"
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add((node.module or "").split(".")[0])
+    for lib in MISSING_LIBS:
+        # Textual fallback as well as the AST check: an already-adapted candidate
+        # is a WRAPPER whose original source sits inside a string literal, so
+        # ast.walk sees only the wrapper's own imports and would clear a strategy
+        # that cannot possibly run.
+        if lib in imported or re.search(rf"\b(?:import|from)\s+{lib}\b", code):
+            return f"needs {lib}, which is not available here"
+    for marker in INFORMATIVE_MARKERS:
+        if marker in code:
+            return "needs a second timeframe (informative pair) — only one is loaded"
+    return ""
+
+
 def adapt(code: str) -> Adapted:
     """Turn foreign strategy source into something exposing `signals(df)`.
 
@@ -399,6 +515,9 @@ def adapt(code: str) -> Adapted:
     hit = _FORBIDDEN.search(code)
     if hit:
         return Adapted(False, "", "", f"rejected unsafe construct: {hit.group(0)!r}")
+    why = unsupported_reason(code)
+    if why:
+        return Adapted(False, "", "", f"unsupported: {why}")
     kind = detect(code)
     if kind == "native":
         return Adapted(True, "native", code)
