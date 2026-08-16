@@ -128,7 +128,7 @@ async function load(){
     by[s].n++;
     const v = r.verdict && r.verdict !== "pending";
     if(v) by[s].tested++;
-    if(r.verdict === "promising" || r.verdict === "promoted") by[s].good++;
+    if(r.verdict === "pass" || r.verdict === "promoted") by[s].good++;
   }
   const names = Object.keys(by).sort((a,b)=>by[b].n-by[a].n);
   document.getElementById("srcrows").innerHTML = names.length ? names.map(s=>{

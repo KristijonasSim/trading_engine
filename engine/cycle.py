@@ -31,10 +31,16 @@ from .harvest_github import SEED_REPOS, harvest_repo
 STATE = Path(__file__).resolve().parent.parent / "state"
 LOG = STATE / "cycle_log.json"
 
-# How many new files to pull per pass. Small on purpose: unauthenticated GitHub
-# allows 60 requests/hour, and a pass that trips the limit poisons the next few.
-HARVEST_PER_PASS = 8
-EVALUATE_PER_PASS = 10
+# Files per repo per pass. Generous now that contents come from
+# raw.githubusercontent.com, which is NOT rate-limited — only the one tree
+# listing per repo is. The old value of 8 was sized for the API blob endpoint
+# and left the queue starving.
+HARVEST_PER_PASS = 120
+
+# Backtests per pass. This one stays small ON PURPOSE. Harvesting is free;
+# evaluating is the part that makes claims about data, and there is no value in
+# making more of those per hour. See stages.py.
+EVALUATE_PER_PASS = 25
 
 
 def run(*, harvest: bool = True, evaluate: bool = True) -> dict:
@@ -46,19 +52,28 @@ def run(*, harvest: bool = True, evaluate: bool = True) -> dict:
         activity.write(status="running", started=started,
                        current={"stage": "harvesting GitHub", "name": "—",
                                 "asset_class": "Crypto", "number": 0, "total": 0})
-        try:
-            seen = set()
-            total = {"seen": 0, "stored": 0, "duplicate": 0,
-                     "unsupported": 0, "errors": 0}
-            for repo in SEED_REPOS:
-                s = harvest_repo(repo, st, limit=HARVEST_PER_PASS, seen_fp=seen)
-                for k in total:
-                    total[k] = getattr(s, k)
-            out["harvest"] = total
-        except RuntimeError as e:          # rate limit — not an error worth retrying
-            out["harvest"] = {"stopped": str(e)}
-        except Exception as e:
-            out["harvest"] = {"error": f"{type(e).__name__}: {e}"[:200]}
+        # ONE shared stats object and ONE shared fingerprint set across repos.
+        # Passing neither meant each call allocated its own, so the totals
+        # reported the LAST repo rather than the pass, and the same strategy
+        # forked into two repos was stored twice.
+        from .harvest_github import HarvestStats
+        agg, seen = HarvestStats(), set()
+        stopped = None
+        for repo in SEED_REPOS:
+            try:
+                harvest_repo(repo, st, limit=HARVEST_PER_PASS,
+                             stats=agg, seen_fp=seen)
+            except RuntimeError as e:
+                # Rate limited. Stop walking further repos — the cap is global,
+                # not per-repo — but keep whatever this pass already stored.
+                stopped = str(e)
+                break
+            except Exception as e:
+                agg.errors += 1
+                stopped = f"{type(e).__name__}: {e}"[:200]
+        out["harvest"] = agg.as_dict()
+        if stopped:
+            out["harvest"]["stopped"] = stopped
 
     if evaluate:
         activity.write(status="running", started=started,

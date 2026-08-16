@@ -28,11 +28,11 @@ settled question. Files are fingerprinted whitespace-insensitively
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +51,13 @@ SEED_REPOS = [
     "freqtrade/freqtrade-strategies",
     "nateemma/strategies",
     "TheoBrigitte/freqtrade",
+    "iterativv/NostalgiaForInfinity",
+    "ssssi/freqtrade_strs",
+    "hansen1015/freqtrade_strategy",
+    "raph92/freqtrade-strategies",
+    "froggleston/cryptofrog-strategies",
+    "jilv220/freqtrade-stuff",
+    "Netan22/freqtrade_strategies",
 ]
 
 # Paths inside a repo that hold strategies. Everything else (tests, utils,
@@ -83,28 +90,67 @@ def _get(url: str) -> dict | list:
         return json.loads(r.read().decode())
 
 
-def _tree(repo: str) -> list[dict]:
-    """Every file in a repo's default branch, one request."""
-    info = _get(f"{API}/repos/{repo}")
-    branch = info.get("default_branch", "main")
-    tree = _get(f"{API}/repos/{repo}/git/trees/{branch}?recursive=1")
-    return [t for t in tree.get("tree", []) if t.get("type") == "blob"]
+def _tree(repo: str) -> tuple[str, list[dict]]:
+    """Every file in a repo, and the branch it came from.
+
+    Tries the two conventional branch names directly instead of asking
+    /repos/{repo} for `default_branch` first. That call was pure overhead — one
+    of the 60 hourly requests spent per repo to learn something that is "main"
+    or "master" essentially always, and the rate limit is the binding constraint
+    on how much this harvester can collect.
+    """
+    last: Exception | None = None
+    for branch in ("main", "master"):
+        try:
+            tree = _get(f"{API}/repos/{repo}/git/trees/{branch}?recursive=1")
+            return branch, [t for t in tree.get("tree", []) if t.get("type") == "blob"]
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429):
+                raise
+            last = e
+    raise last or RuntimeError(f"no usable branch for {repo}")
 
 
 def _wanted(path: str) -> bool:
+    """Any .py that is not obviously infrastructure.
+
+    LIKELY is no longer a REQUIREMENT, only a ranking hint (see `_rank`). Several
+    of the biggest strategy repos — NostalgiaForInfinity among them — keep the
+    strategy at the repository ROOT, so demanding 'strateg' or 'user_data' in the
+    path silently skipped exactly the files worth having.
+
+    Being generous is cheap now: contents come from raw.githubusercontent.com at
+    no rate-limit cost, and `detect()` rejects a non-strategy for free.
+    """
     low = path.lower()
-    if not low.endswith(".py"):
-        return False
-    if any(s in low for s in SKIP):
-        return False
-    return any(s in low for s in LIKELY)
+    return low.endswith(".py") and not any(s in low for s in SKIP)
 
 
-def _blob(repo: str, sha: str) -> str:
-    b = _get(f"{API}/repos/{repo}/git/blobs/{sha}")
-    if b.get("encoding") != "base64":
-        raise ValueError("unexpected blob encoding")
-    return base64.b64decode(b["content"]).decode("utf-8", "replace")
+def _rank(path: str) -> tuple[int, int]:
+    """Sort key: obvious strategy paths first, then shortest path.
+
+    The per-repo cap slices this list, so ordering decides what a pass actually
+    collects when a repo has more .py files than the cap allows.
+    """
+    low = path.lower()
+    return (0 if any(s in low for s in LIKELY) else 1, low.count("/"))
+
+
+def _blob(repo: str, branch: str, path: str) -> str:
+    """File contents via raw.githubusercontent.com.
+
+    THIS IS THE WHOLE THROUGHPUT FIX. The API blob endpoint counts against the
+    60-requests/hour unauthenticated cap, so fetching files through it meant a
+    pass could collect at most ~50 files an hour and then stall — which is
+    exactly how the engine ended up idle with an empty queue. raw.github
+    usercontent.com serves the same bytes and does NOT count against that cap,
+    so only the tree listing is now rate-limited: one request per repo, and
+    unlimited files after it.
+    """
+    url = f"https://raw.githubusercontent.com/{repo}/{branch}/{urllib.parse.quote(path)}"
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.read().decode("utf-8", "replace")
 
 
 def _ingest_code(store: CandidateStore, *, cid: str, name: str, url: str,
@@ -136,13 +182,15 @@ def _ingest_code(store: CandidateStore, *, cid: str, name: str, url: str,
     stats.stored += 1
 
 
-def harvest_repo(repo: str, store: CandidateStore, *, limit: int = 40,
+def harvest_repo(repo: str, store: CandidateStore, *, limit: int = 120,
                  stats: HarvestStats | None = None,
                  seen_fp: set[str] | None = None) -> HarvestStats:
     stats = stats or HarvestStats()
     seen_fp = seen_fp if seen_fp is not None else set()
     try:
-        files = [t for t in _tree(repo) if _wanted(t["path"])][:limit]
+        branch, blobs = _tree(repo)
+        files = sorted((t for t in blobs if _wanted(t["path"])),
+                       key=lambda t: _rank(t["path"]))[:limit]
     except urllib.error.HTTPError as e:
         stats.errors += 1
         if e.code in (403, 429):
@@ -152,17 +200,17 @@ def harvest_repo(repo: str, store: CandidateStore, *, limit: int = 40,
         return stats
     for f in files:
         try:
-            code = _blob(repo, f["sha"])
+            code = _blob(repo, branch, f["path"])
         except Exception:
             stats.errors += 1
             continue
         stem = Path(f["path"]).stem
         _ingest_code(
             store, cid=f"gh:{repo}:{f['path']}", name=stem,
-            url=f"https://github.com/{repo}/blob/HEAD/{f['path']}",
+            url=f"https://github.com/{repo}/blob/{branch}/{f['path']}",
             code=code, author=repo.split("/")[0], source="GitHub",
             seen_fp=seen_fp, stats=stats)
-        time.sleep(0.2)
+        time.sleep(0.05)
     return stats
 
 

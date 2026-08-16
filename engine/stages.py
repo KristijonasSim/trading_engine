@@ -168,16 +168,26 @@ def run(symbols: list[str] | None = None, limit: int = 25) -> dict:
         rec["url"] = r.get("url")
         results.append(rec)
 
+        # Use the vocabulary the EXISTING console already speaks: pass/fail, with
+        # status rejected/tested. Writing 'promising'/'rejected' invented a second
+        # vocabulary, so index.html — which counts verdict === "pass" and "fail" —
+        # showed 0 rejected and 0 promoted while the store held 44 and 2.
         if rec["stage"] == "holdout" and rec["passed"]:
             survivors.append(rec)
             h = rec["holdout"]
-            st.update_result(r["id"], status="tested", verdict="promising",
+            st.update_result(r["id"], status="tested", verdict="pass",
                              pf=h["pf"], trades=h["trades"],
                              win_rate=h["win_rate"], tpd=h["tpd"],
                              tested_from=h["frm"], tested_to=h["to"],
+                             score=8,
                              note=f"survived screen + holdout — {rec['reason']}")
         else:
-            st.update_result(r["id"], status="tested", verdict="rejected",
+            s = rec.get("screen") or {}
+            st.update_result(r["id"], status="rejected", verdict="fail", score=1,
+                             pf=(rec.get("holdout") or s).get("pf"),
+                             trades=(rec.get("holdout") or s).get("trades", 0),
+                             tested_from=(rec.get("holdout") or s).get("frm"),
+                             tested_to=(rec.get("holdout") or s).get("to"),
                              note=rec.get("reason", "did not pass"))
         st.append_audit(r["id"], f"stage:{rec['stage']}", rec.get("reason", ""))
 
