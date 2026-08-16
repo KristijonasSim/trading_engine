@@ -1,0 +1,159 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Engine — overview</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#262d36; --ink:#e6edf3; --dim:#8b949e;
+    --ok:#3fb950; --bad:#f85149; --warn:#d29922; --accent:#58a6ff; --tv:#b083f0;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);padding:24px;
+       font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:19px;margin:0 0 2px}
+  h2{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;
+     margin:26px 0 10px;font-weight:600}
+  .sub{color:var(--dim);font-size:13px}
+  nav{margin:14px 0 4px;display:flex;gap:8px;flex-wrap:wrap}
+  nav a{font-size:13px;padding:6px 12px;border:1px solid var(--line);border-radius:7px;
+        color:var(--accent);text-decoration:none;background:var(--panel)}
+  nav a:hover{border-color:var(--accent)}
+
+  .live{display:flex;align-items:center;gap:12px;background:var(--panel);
+        border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-top:16px}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--dim);flex:none}
+  .dot.on{background:var(--ok);box-shadow:0 0 0 4px rgba(63,185,80,.15);
+          animation:p 1.6s ease-in-out infinite}
+  .dot.err{background:var(--bad)}
+  @keyframes p{50%{opacity:.35}}
+  .live .what{font-weight:600}
+  .live .when{color:var(--dim);font-size:12px;margin-left:auto;font-family:var(--mono)}
+
+  .grid{display:flex;gap:10px;flex-wrap:wrap}
+  .card{flex:1 1 165px;background:var(--panel);border:1px solid var(--line);
+        border-radius:10px;padding:14px}
+  .card .n{font:600 25px/1.1 var(--mono)}
+  .card .l{color:var(--dim);font-size:12px;margin-top:4px}
+  .card.good .n{color:var(--ok)} .card.bad .n{color:var(--bad)} .card.hi{border-color:var(--accent)}
+
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+  table{border-collapse:collapse;width:100%;min-width:640px;background:var(--panel)}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:0}
+  td.num{font-family:var(--mono);text-align:right}
+  .src{font-weight:600}
+  .src.tv{color:var(--tv)} .src.gh{color:var(--accent)} .src.lo{color:var(--dim)}
+  .bar{height:6px;border-radius:3px;background:#21262d;overflow:hidden;min-width:90px}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  .note{color:var(--dim);font-size:12.5px;margin-top:10px}
+  .empty{padding:22px;text-align:center;color:var(--dim)}
+</style>
+<div class="wrap">
+  <h1>Research engine</h1>
+  <div class="sub" id="sub">loading…</div>
+
+  <nav>
+    <a href="pipeline.html">Funnel (screen → holdout)</a>
+    <a href="index.html">Full strategy console</a>
+    <a href="activity.html">Raw activity</a>
+  </nav>
+
+  <div class="live">
+    <span class="dot" id="dot"></span>
+    <span class="what" id="what">…</span>
+    <span class="when" id="when"></span>
+  </div>
+
+  <h2>Everything harvested, by source</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>Source</th><th class="num">Harvested</th><th class="num">Tested</th>
+        <th class="num">Promising</th><th>Progress</th><th class="num">Token cost</th>
+      </tr></thead>
+      <tbody id="srcrows"><tr><td colspan="6" class="empty">loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="note" id="srcnote"></div>
+
+  <h2>Latest funnel pass</h2>
+  <div class="grid" id="funnel"></div>
+  <div class="note" id="fnote"></div>
+</div>
+<script>
+const esc = s => String(s ?? "").replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+const card = (n,l,c)=>`<div class="card ${c||""}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+const j = async p => { try { return await (await fetch(p+"?"+Date.now(),{cache:"no-store"})).json(); } catch { return null; } };
+
+// TradingView candidates cost tokens (Pine must be translated). Everything that
+// arrives already as Python does not. Stating it per row is the whole point of
+// putting the two sources in one table.
+const PAID = s => s === "TradingView";
+
+function srcClass(s){ return s==="TradingView" ? "tv" : s==="GitHub" ? "gh" : "lo"; }
+
+async function load(){
+  const [act, strat, pipe] = await Promise.all([
+    j("activity.json"), j("strategies.json"), j("pipeline.json")]);
+
+  // ---- live line
+  const dot = document.getElementById("dot"), what = document.getElementById("what");
+  if(!act){ what.textContent = "no pass has run yet"; }
+  else {
+    const running = act.status === "running";
+    dot.className = "dot" + (running ? " on" : act.status==="error" ? " err" : "");
+    what.textContent = running
+      ? (act.current?.stage ? "Running — " + act.current.stage : "Running")
+      : act.status === "error" ? ("Error — " + (act.error||"").slice(0,120))
+      : "Idle — waiting for the next pass";
+    document.getElementById("when").textContent = "updated " + esc(act.updated || "");
+    if(act.summary) document.getElementById("fnote").textContent =
+      `Last pass: ${act.summary.tested} evaluated · ${act.summary.rejected} rejected · ${act.summary.promoted} promising · finished ${act.summary.finished}`;
+  }
+
+  // ---- per-source table, built from the FULL store so TradingView and GitHub
+  //      sit in one place rather than in two separate consoles.
+  const rows = (strat && strat.strategies) || [];
+  document.getElementById("sub").innerHTML = rows.length
+    ? `${rows.length} strategies in the store · console at 127.0.0.1:8777`
+    : `store is empty on this machine · console at 127.0.0.1:8777`;
+
+  const by = {};
+  for(const r of rows){
+    const s = r.source || "Unknown";
+    by[s] = by[s] || {n:0, tested:0, good:0};
+    by[s].n++;
+    const v = r.verdict && r.verdict !== "pending";
+    if(v) by[s].tested++;
+    if(r.verdict === "promising" || r.verdict === "promoted") by[s].good++;
+  }
+  const names = Object.keys(by).sort((a,b)=>by[b].n-by[a].n);
+  document.getElementById("srcrows").innerHTML = names.length ? names.map(s=>{
+    const d = by[s], pct = d.n ? Math.round(100*d.tested/d.n) : 0;
+    return `<tr>
+      <td class="src ${srcClass(s)}">${esc(s)}</td>
+      <td class="num">${d.n}</td><td class="num">${d.tested}</td>
+      <td class="num" style="color:${d.good?"var(--ok)":"inherit"}">${d.good}</td>
+      <td><div class="bar"><i style="width:${pct}%"></i></div></td>
+      <td class="num" style="color:${PAID(s)?"var(--warn)":"var(--ok)"}">${PAID(s)?"tokens":"0"}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="6" class="empty">nothing harvested on this machine yet</td></tr>`;
+
+  document.getElementById("srcnote").innerHTML = names.includes("TradingView")
+    ? "TradingView rows need Pine translated before they can run, which costs model tokens. GitHub and Local arrive as Python and cost nothing."
+    : "No TradingView rows in this machine's store — that history lives in <code>state/</code> on the other PC, which is gitignored and not synced.";
+
+  // ---- funnel
+  const c = pipe && pipe.counts;
+  document.getElementById("funnel").innerHTML = c
+    ? card(c.candidates,"queued") + card(c.evaluated-c.failed_verify,"runnable")
+      + card(c.failed_screen,"died on screen","bad")
+      + card(c.reached_holdout,"reached holdout","hi")
+      + card(c.survivors,"survived both", c.survivors?"good":"bad")
+    : `<div class="card"><div class="l">no funnel data yet</div></div>`;
+}
+load(); setInterval(load, 5000);
+</script>

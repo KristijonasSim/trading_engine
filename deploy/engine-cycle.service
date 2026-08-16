@@ -15,5 +15,9 @@ WorkingDirectory=%h/trading_engine
 Environment=PYTHONUNBUFFERED=1
 Environment=STOP_FILL=close
 Environment=TRADING_BOTS_DATA=%h/trading-bots/scalping/data
+# Optional. Put GITHUB_TOKEN=ghp_... in this file to raise the GitHub API cap
+# from 60/hour to 5,000/hour. Unauthenticated harvesting exhausts 60 in about
+# two passes, after which every pass reports 'rate limit hit' and stores nothing.
+EnvironmentFile=-%h/trading_engine/.env
 ExecStart=/usr/bin/python3 -m engine.cycle
 Nice=10

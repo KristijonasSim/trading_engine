@@ -24,7 +24,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import stages
+from . import activity, stages
 from .harvest import CandidateStore, to_dashboard
 from .harvest_github import SEED_REPOS, harvest_repo
 
@@ -39,9 +39,13 @@ EVALUATE_PER_PASS = 10
 
 def run(*, harvest: bool = True, evaluate: bool = True) -> dict:
     st = CandidateStore()
-    out: dict = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    out: dict = {"at": started}
 
     if harvest:
+        activity.write(status="running", started=started,
+                       current={"stage": "harvesting GitHub", "name": "—",
+                                "asset_class": "Crypto", "number": 0, "total": 0})
         try:
             seen = set()
             total = {"seen": 0, "stored": 0, "duplicate": 0,
@@ -57,6 +61,9 @@ def run(*, harvest: bool = True, evaluate: bool = True) -> dict:
             out["harvest"] = {"error": f"{type(e).__name__}: {e}"[:200]}
 
     if evaluate:
+        activity.write(status="running", started=started,
+                       current={"stage": "screening and holdout", "name": "—",
+                                "asset_class": "Crypto", "number": 0, "total": 0})
         try:
             out["stages"] = stages.run(limit=EVALUATE_PER_PASS)
         except Exception as e:
@@ -66,6 +73,20 @@ def run(*, harvest: bool = True, evaluate: bool = True) -> dict:
         to_dashboard(st)
     except Exception:
         pass
+
+    # Publish the finished state LAST, so the UI never shows "idle" while a
+    # pass is still writing results.
+    s = out.get("stages") or {}
+    activity.write(
+        status="error" if s.get("error") else "idle",
+        started=started,
+        current={"stage": "last completed", "name": "pass finished",
+                 "asset_class": "Crypto", "number": 0, "total": 0},
+        summary={"tested": s.get("evaluated", 0),
+                 "rejected": s.get("evaluated", 0) - s.get("survivors", 0),
+                 "promoted": s.get("survivors", 0),
+                 "finished": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+        error=s.get("error"))
 
     STATE.mkdir(parents=True, exist_ok=True)
     hist = []
