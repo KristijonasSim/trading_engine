@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import bridge, pysource
+from . import activity, bridge, pysource
 from .harvest import CandidateStore
 from .translate import verify
 
@@ -161,7 +161,17 @@ def run(symbols: list[str] | None = None, limit: int = 25) -> dict:
             if pysource.has_source(r["id"]) and r.get("verdict") in (None, "pending")]
 
     results, survivors = [], []
-    for r in rows[:limit]:
+    batch = rows[:limit]
+    for i, r in enumerate(batch, 1):
+        # Heartbeat PER CANDIDATE, not once per phase. Evaluating 40 strategies
+        # can take well over the console's 7-minute staleness window, and a
+        # single write at the start of the loop left activity.json claiming
+        # "running" while growing stale — which the console correctly, and
+        # alarmingly, renders as "worker stopped" mid-pass.
+        activity.write(status="running",
+                       current={"stage": "screening and holdout",
+                                "name": r["name"], "asset_class": "Crypto",
+                                "number": i, "total": len(batch)})
         rec = evaluate(r["id"], symbols)
         rec["name"] = r["name"]
         rec["source"] = r["source"]

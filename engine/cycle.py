@@ -37,16 +37,36 @@ LOG = STATE / "cycle_log.json"
 # and left the queue starving.
 HARVEST_PER_PASS = 120
 
-# Backtests per pass. This one stays small ON PURPOSE. Harvesting is free;
-# evaluating is the part that makes claims about data, and there is no value in
-# making more of those per hour. See stages.py.
-EVALUATE_PER_PASS = 25
+# Backtests per pass. Sized so a pass takes ~30-60s: long enough to be useful,
+# short enough that the 5-minute timer keeps dashboard/activity.json inside the
+# console's 7-minute staleness window. A 30-minute timer left the console
+# reporting "worker stopped" for 23 minutes out of every 30 — accurately, but it
+# reads as a broken engine.
+EVALUATE_PER_PASS = 40
+
+# Only harvest when the queue is running dry. Harvesting costs GitHub API
+# requests against a 60/hour unauthenticated cap; testing costs nothing external.
+# Walking ten repos every five minutes would exhaust the cap and starve the very
+# queue it was meant to fill.
+HARVEST_WHEN_PENDING_BELOW = 60
 
 
-def run(*, harvest: bool = True, evaluate: bool = True) -> dict:
+def _pending(st: CandidateStore) -> int:
+    from . import pysource
+    return sum(1 for r in st.all()
+               if pysource.has_source(r["id"]) and r.get("verdict") in (None, "pending"))
+
+
+def run(*, harvest: bool | None = None, evaluate: bool = True) -> dict:
     st = CandidateStore()
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    out: dict = {"at": started}
+    pending = _pending(st)
+    out: dict = {"at": started, "pending": pending}
+
+    if harvest is None:
+        harvest = pending < HARVEST_WHEN_PENDING_BELOW
+    if not harvest:
+        out["harvest"] = {"skipped": f"{pending} already queued"}
 
     if harvest:
         activity.write(status="running", started=started,
