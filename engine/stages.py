@@ -35,6 +35,8 @@ that settles it, which is what the promotion ladder in `promotion.py` is for.
 from __future__ import annotations
 
 import json
+import signal
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +58,11 @@ MIN_TRADES = 30
 # Holdout gate, matching trading-bots' PF >= 1.2 backtest gate.
 HOLDOUT_PF = 1.20
 
+# Wall-clock budget for ONE candidate, both stages, all symbols. A strategy that
+# cannot be evaluated inside this is rejected rather than waited for — see
+# _deadline().
+EVAL_TIMEOUT_S = 45
+
 DASH = Path(__file__).resolve().parent.parent / "dashboard"
 FUNNEL = DASH / "pipeline.json"
 
@@ -76,6 +83,29 @@ def _split(df: pd.DataFrame, which: str) -> pd.DataFrame:
     return part.reset_index(drop=True)
 
 
+# Bars, loaded once per process. Every candidate reads the same five symbols for
+# both stages, so without this a pass re-parses ~53k-bar CSVs 10 times per
+# strategy — 400 redundant loads for a 40-strategy pass, which was most of the
+# wall time. The split frames are cached too, since they are what gets used.
+_BARS: dict[tuple[str, str], pd.DataFrame] = {}
+
+
+def _bars(sym: str, which: str) -> pd.DataFrame | None:
+    key = (sym, which)
+    if key not in _BARS:
+        try:
+            df = bridge.fetch_crypto(sym, "1h")
+        except Exception:
+            _BARS[key] = None
+            return None
+        if df is None or len(df) < 500:
+            _BARS[key] = None
+            return None
+        part = _split(df, which)
+        _BARS[key] = part if len(part) >= 200 else None
+    return _BARS[key]
+
+
 def _run(code: str, symbols: list[str], which: str,
          fee: float = bridge.TAKER) -> StageResult:
     """Pooled backtest over every symbol, zero admission (HARD RULE 3)."""
@@ -87,14 +117,8 @@ def _run(code: str, symbols: list[str], which: str,
     lo = hi = None
     days = 0.0
     for sym in symbols:
-        try:
-            df = bridge.fetch_crypto(sym, "1h")
-        except Exception:
-            continue
-        if df is None or len(df) < 500:
-            continue
-        part = _split(df, which)
-        if len(part) < 200:
+        part = _bars(sym, which)
+        if part is None:
             continue
         a = pd.to_datetime(part["start"].iloc[0], unit="ms", utc=True)
         b = pd.to_datetime(part["start"].iloc[-1], unit="ms", utc=True)
@@ -123,14 +147,55 @@ def _run(code: str, symbols: list[str], which: str,
         to=str(hi.date()) if hi is not None else "")
 
 
+@contextmanager
+def _deadline(seconds: int):
+    """Abort a candidate that will not finish in reasonable time.
+
+    Some harvested strategies compute hundreds of indicators per bar and take
+    minutes on a single symbol. In a 24/7 loop one of those is not slow, it is a
+    STOP: the queue stalls behind it, the console's per-candidate heartbeat sits
+    on the same name, and the engine looks dead while it is in fact busy on one
+    hopeless file.
+
+    SIGALRM only fires between bytecode instructions, so a call stuck inside a
+    single long C-level numpy op can overrun it. That is acceptable — this is a
+    guard against pathological strategies, not a hard real-time bound.
+    """
+    def _fire(signum, frame):
+        raise TimeoutError(f"exceeded {seconds}s")
+
+    old = signal.signal(signal.SIGALRM, _fire)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
 def evaluate(cid: str, symbols: list[str]) -> dict:
     """Full funnel for one candidate. Returns a stage-by-stage record."""
     code = pysource.source(cid)
     if code is None:
         return {"id": cid, "stage": "no-source", "passed": False}
+    try:
+        with _deadline(EVAL_TIMEOUT_S):
+            return _evaluate(cid, code, symbols)
+    except TimeoutError as e:
+        return {"id": cid, "stage": "timeout", "passed": False,
+                "reason": f"too slow to evaluate ({e}) — skipped"}
+    except Exception as e:
+        return {"id": cid, "stage": "error", "passed": False,
+                "reason": f"{type(e).__name__}: {e}"[:160]}
+
+
+def _evaluate(cid: str, code: str, symbols: list[str]) -> dict:
 
     # STAGE 1 — runnable and honest. Costs nothing, catches look-ahead.
-    df = bridge.fetch_crypto(symbols[0], "1h")
+    df = _bars(symbols[0], "screen")
+    if df is None:
+        return {"id": cid, "stage": "no-bars", "passed": False,
+                "reason": "no bars for the reference symbol"}
     v = verify(code, df)
     if not v.ok:
         return {"id": cid, "stage": "verify", "passed": False,
@@ -151,6 +216,35 @@ def evaluate(cid: str, symbols: list[str]) -> dict:
     rec.update(stage="holdout", passed=passed,
                reason=f"holdout PF {s3.pf:.2f} on {s3.trades} trades")
     return rec
+
+
+def _publish(st: CandidateStore, results: list[dict], survivors: list[dict]) -> dict:
+    """Write both files the console reads: the funnel and the strategy list."""
+    funnel = {
+        "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "split": SCREEN_FRAC,
+        "gates": {"screen_pf": SCREEN_PF, "holdout_pf": HOLDOUT_PF,
+                  "min_trades": MIN_TRADES},
+        "counts": {
+            "candidates": len(results),
+            "evaluated": len(results),
+            "failed_verify": sum(1 for r in results if r["stage"] == "verify"),
+            "failed_screen": sum(1 for r in results if r["stage"] == "screen"),
+            "reached_holdout": sum(1 for r in results if r["stage"] == "holdout"),
+            "survivors": len(survivors),
+        },
+        "results": results,
+    }
+    DASH.mkdir(parents=True, exist_ok=True)
+    tmp = FUNNEL.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(funnel, indent=1, default=str))
+    tmp.replace(FUNNEL)
+    try:
+        from .harvest import to_dashboard
+        to_dashboard(st)
+    except Exception:
+        pass
+    return funnel["counts"]
 
 
 def run(symbols: list[str] | None = None, limit: int = 25) -> dict:
@@ -201,26 +295,14 @@ def run(symbols: list[str] | None = None, limit: int = 25) -> dict:
                              note=rec.get("reason", "did not pass"))
         st.append_audit(r["id"], f"stage:{rec['stage']}", rec.get("reason", ""))
 
-    funnel = {
-        "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "split": SCREEN_FRAC,
-        "gates": {"screen_pf": SCREEN_PF, "holdout_pf": HOLDOUT_PF,
-                  "min_trades": MIN_TRADES},
-        "counts": {
-            "candidates": len(rows),
-            "evaluated": len(results),
-            "failed_verify": sum(1 for r in results if r["stage"] == "verify"),
-            "failed_screen": sum(1 for r in results if r["stage"] == "screen"),
-            "reached_holdout": sum(1 for r in results if r["stage"] == "holdout"),
-            "survivors": len(survivors),
-        },
-        "results": results,
-    }
-    DASH.mkdir(parents=True, exist_ok=True)
-    tmp = FUNNEL.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(funnel, indent=1, default=str))
-    tmp.replace(FUNNEL)
-    return funnel["counts"]
+        # Republish the console's data AS WE GO. index.html reads
+        # strategies.json, and writing it only at the end of a pass froze every
+        # counter for the pass's whole duration — 15+ minutes once the queue
+        # filled with heavy strategies. The DB held 64 rejected while the page
+        # still showed 44, which is indistinguishable from a stalled engine.
+        _publish(st, results, survivors)
+
+    return _publish(st, results, survivors)
 
 
 if __name__ == "__main__":
