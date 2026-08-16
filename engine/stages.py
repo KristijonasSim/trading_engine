@@ -294,14 +294,27 @@ def run(symbols: list[str] | None = None, limit: int = 25) -> dict:
                              tested_from=h["frm"], tested_to=h["to"],
                              score=8,
                              note=f"survived screen + holdout — {rec['reason']}")
-        else:
+        elif rec["stage"] in ("screen", "holdout"):
+            # MEASURED and lost. `fail` is the honest word: it ran, it produced
+            # trades, and the numbers did not clear the gates.
             s = rec.get("screen") or {}
+            m = rec.get("holdout") or s
             st.update_result(r["id"], status="rejected", verdict="fail", score=1,
-                             pf=(rec.get("holdout") or s).get("pf"),
-                             trades=(rec.get("holdout") or s).get("trades", 0),
-                             tested_from=(rec.get("holdout") or s).get("frm"),
-                             tested_to=(rec.get("holdout") or s).get("to"),
+                             pf=m.get("pf"), trades=m.get("trades", 0),
+                             win_rate=m.get("win_rate"), tpd=m.get("tpd"),
+                             tested_from=m.get("frm"), tested_to=m.get("to"),
                              note=rec.get("reason", "did not pass"))
+        else:
+            # NEVER RAN: unsupported, unverifiable, timed out, or raised. There
+            # is no performance conclusion here, so calling it `fail` claims a
+            # measurement that was never taken — and the console, which counts
+            # `blocked` as "needs implementation", showed 0 while 60+ cards
+            # displayed "no performance result yet". `blocked` is the word it
+            # already speaks for exactly this state.
+            st.update_result(r["id"], status="blocked", verdict="blocked",
+                             score=None, pf=None, trades=0,
+                             tested_from=None, tested_to=None,
+                             note=rec.get("reason", "could not be run here"))
         st.append_audit(r["id"], f"stage:{rec['stage']}", rec.get("reason", ""))
 
         # Republish the console's data AS WE GO. index.html reads
