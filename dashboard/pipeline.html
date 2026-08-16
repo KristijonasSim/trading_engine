@@ -1,0 +1,116 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Engine Pipeline</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#262d36; --ink:#e6edf3;
+    --dim:#8b949e; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --accent:#58a6ff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:24px}
+  h1{font-size:19px;margin:0 0 2px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:20px}
+  .sub b{color:var(--ok)}
+  .wrap{max-width:1100px;margin:0 auto}
+
+  .funnel{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:22px}
+  .step{flex:1 1 150px;background:var(--panel);border:1px solid var(--line);
+        border-radius:10px;padding:14px}
+  .step .n{font:600 26px/1.1 var(--mono)}
+  .step .l{color:var(--dim);font-size:12px;margin-top:4px}
+  .step.good .n{color:var(--ok)} .step.bad .n{color:var(--bad)}
+  .step.hi{border-color:var(--accent)}
+
+  .note{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);
+        border-radius:8px;padding:12px 14px;margin-bottom:20px;color:var(--dim);font-size:13px}
+  .note b{color:var(--ink)}
+
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+  table{border-collapse:collapse;width:100%;min-width:720px;background:var(--panel)}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:0}
+  td.num{font-family:var(--mono);text-align:right}
+  .pill{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--dim)}
+  .pill.pass{color:var(--ok);border-color:var(--ok)}
+  .pill.drop{color:var(--bad);border-color:var(--bad)}
+  .pill.mid{color:var(--warn);border-color:var(--warn)}
+  .fall{color:var(--bad)} .rise{color:var(--ok)}
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  .empty{padding:26px;text-align:center;color:var(--dim)}
+</style>
+<div class="wrap">
+  <h1>Engine pipeline</h1>
+  <div class="sub" id="sub">loading…</div>
+
+  <div class="funnel" id="funnel"></div>
+
+  <div class="note" id="explain"></div>
+
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>Strategy</th><th>Source</th><th>Stage</th>
+        <th class="num">Screen PF</th><th class="num">trades</th>
+        <th class="num">Holdout PF</th><th class="num">trades</th>
+        <th>Verdict</th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="empty">loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<script>
+const fmt = v => (v === undefined || v === null || v === "" ) ? "—" : (+v).toFixed(2);
+const esc = s => String(s ?? "").replace(/[<>&]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+
+function step(n, label, cls){
+  return `<div class="step ${cls||""}"><div class="n">${n}</div><div class="l">${label}</div></div>`;
+}
+
+async function load(){
+  let d;
+  try { d = await (await fetch("pipeline.json?" + Date.now())).json(); }
+  catch { document.getElementById("sub").textContent = "no pipeline.json yet — run the engine once"; return; }
+
+  const c = d.counts, g = d.gates;
+  document.getElementById("sub").innerHTML =
+    `updated ${esc(d.generated)} · token cost <b>0</b> · screen = first ${Math.round(d.split*100)}% of history, holdout = the rest`;
+
+  document.getElementById("funnel").innerHTML =
+      step(c.candidates, "harvested")
+    + step(c.evaluated - c.failed_verify, "runnable")
+    + step(c.failed_screen, "died on screen", "bad")
+    + step(c.reached_holdout, "reached holdout", "hi")
+    + step(c.survivors, "survived both", c.survivors ? "good" : "bad");
+
+  document.getElementById("explain").innerHTML =
+    `<b>Screen</b> keeps PF ≥ ${g.screen_pf} on ≥ ${g.min_trades} trades — deliberately loose, it only cuts obvious junk. ` +
+    `<b>Holdout</b> demands PF ≥ ${g.holdout_pf} on data the screen never touched. ` +
+    `A strategy that got lucky in the screen cannot repeat it on unseen bars; a real edge can. ` +
+    `Survivors are <b>promising, not proven</b> — forward testing still decides.`;
+
+  const rows = (d.results || []).slice().sort((a,b) =>
+    (b.holdout?.pf ?? -1) - (a.holdout?.pf ?? -1) || (b.screen?.pf ?? -1) - (a.screen?.pf ?? -1));
+
+  document.getElementById("rows").innerHTML = rows.length ? rows.map(r => {
+    const s = r.screen || {}, h = r.holdout || {};
+    let pill = '<span class="pill">not run</span>';
+    if (r.passed) pill = '<span class="pill pass">promising</span>';
+    else if (r.stage === "holdout") pill = '<span class="pill drop">died on fresh data</span>';
+    else if (r.stage === "screen") pill = '<span class="pill mid">failed screen</span>';
+    else if (r.stage === "verify") pill = '<span class="pill drop">not runnable</span>';
+    const drop = (s.pf && h.pf) ? (h.pf < s.pf ? "fall" : "rise") : "";
+    const name = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name);
+    return `<tr>
+      <td>${name}</td><td>${esc(r.source)}</td><td>${esc(r.stage)}</td>
+      <td class="num">${fmt(s.pf)}</td><td class="num">${s.trades ?? "—"}</td>
+      <td class="num ${drop}">${fmt(h.pf)}</td><td class="num">${h.trades ?? "—"}</td>
+      <td>${pill}</td></tr>`;
+  }).join("") : `<tr><td colspan="8" class="empty">nothing evaluated yet</td></tr>`;
+}
+load();
+setInterval(load, 15000);
+</script>

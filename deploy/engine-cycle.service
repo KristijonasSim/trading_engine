@@ -1,0 +1,19 @@
+[Unit]
+# One zero-token pass: harvest GitHub -> adapt -> screen -> holdout.
+#
+# Deliberately Type=oneshot on a timer rather than a long-running daemon. A pass
+# is stateless and resumable, so a crash costs at most one pass, and the queue
+# picks up exactly where it stopped. %h is used throughout so the same unit file
+# works on both PCs — the older units hardcode /home/kris and only run on one.
+Description=trading_engine — one research pass (harvest, screen, holdout)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/trading_engine
+Environment=PYTHONUNBUFFERED=1
+Environment=STOP_FILL=close
+Environment=TRADING_BOTS_DATA=%h/trading-bots/scalping/data
+ExecStart=/usr/bin/python3 -m engine.cycle
+Nice=10

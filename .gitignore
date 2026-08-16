@@ -22,3 +22,9 @@ dashboard/implementation-activity.json
 dashboard/history.json
 RESULTS.md
 state/notified.json
+
+# Generated console data — machine-local, same reason as state/.
+# Committing it would conflict between the two PCs on every pass.
+dashboard/strategies.json
+dashboard/pipeline.json
+dashboard/*.json.tmp

@@ -150,7 +150,17 @@ def _pine_source(cid: str) -> str | None:
 
 
 def _implementation(row: dict) -> str | None:
-    """Exact executable source for a row, regardless of where the idea came from."""
+    """Exact executable source for a row, regardless of where the idea came from.
+
+    Python-source candidates (GitHub, Local) are checked FIRST and deliberately:
+    they are already runnable, so they must never reach the translator. That is
+    the entire cost saving — a row with stored Python costs zero tokens, where a
+    Pine row costs ~10k per attempt and up to three attempts.
+    """
+    from . import pysource
+    code = pysource.source(row["id"])
+    if code is not None:
+        return code
     if row.get("source") == "Invented":
         from .invent import source
         return source(row["id"])
@@ -389,9 +399,11 @@ def _work_queue(st: CandidateStore, limit: int | None = None, translator=None) -
     rows a pass, so that blind spot only widens. A few thousand ids and a
     directory listing is nothing next to one backtest.
     """
+    from . import pysource
     have_pine = {p.stem for p in PINE.glob("*.pine")}
+    have_py = {p.stem for p in pysource.PYSRC.glob("*.py")} if pysource.PYSRC.exists() else set()
     ready = [r for r in st.queue(limit=None)
-             if (_safe(r["id"]) in have_pine or
+             if (_safe(r["id"]) in have_pine or _safe(r["id"]) in have_py or
                  (r.get("source") == "Invented" and _implementation(r)))]
 
     # The old queue was pure popularity.  That is useful evidence that people
@@ -430,8 +442,13 @@ def _work_queue(st: CandidateStore, limit: int | None = None, translator=None) -
         # useful test queue is never held hostage by translator failures.
         source = _implementation(row)
         cached = getattr(translator, "cached", lambda **_: False)
-        if row.get("source") == "Invented" or (translator and source and
-                                                 cached(name=row["name"], source=source)):
+        from . import pysource
+        # Python-source rows need no translation at all, so they are always
+        # ready. They rank with cached translations, ahead of anything that
+        # would have to call a model before it could be tested.
+        if (pysource.has_source(row["id"]) or row.get("source") == "Invented"
+                or (translator and source
+                    and cached(name=row["name"], source=source))):
             score += 300.0
         # Known strategy shapes. These are triage weights, not a backtest gate.
         score += sum({"structure": 28.0, "volume": 24.0, "breakout": 20.0,

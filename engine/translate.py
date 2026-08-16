@@ -121,7 +121,13 @@ PINE SOURCE:
 
 # Imports a translation is allowed to make. Anything else is a rejection, not a
 # warning -- generated code runs in this process.
-_ALLOWED_IMPORTS = {"numpy", "pandas", "math"}
+#
+# `engine` is allowed for ONE reason: `adapters.py` emits a wrapper that calls
+# our own deterministic freqtrade runner. That module is ours and is in git —
+# it is not generated code. The foreign strategy it carries is scanned with the
+# SAME _FORBIDDEN pattern before it is ever executed (adapters.adapt), so the
+# allowance widens what may be imported, not what may be run.
+_ALLOWED_IMPORTS = {"numpy", "pandas", "math", "engine"}
 _FORBIDDEN = re.compile(
     r"\b(open|exec|eval|compile|__import__|input|breakpoint)\s*\(|"
     r"\b(os|sys|subprocess|socket|requests|urllib|shutil|pathlib|importlib)\b")

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run a trading_engine research pass every 30 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=30min
+Persistent=true
+Unit=engine-cycle.service
+
+[Install]
+WantedBy=timers.target

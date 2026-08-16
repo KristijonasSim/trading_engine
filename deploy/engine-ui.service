@@ -1,0 +1,16 @@
+[Unit]
+# Static console on 127.0.0.1:8777. Bound to loopback ON PURPOSE — it is an
+# unauthenticated view of research in progress and has no business on the network.
+Description=trading_engine — console on 127.0.0.1:8777
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/trading_engine
+ExecStart=/usr/bin/python3 -m engine.dashboard_server
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=default.target
