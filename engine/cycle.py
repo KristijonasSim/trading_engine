@@ -75,7 +75,7 @@ def run(*, harvest: bool | None = None, evaluate: bool = True) -> dict:
     if not HARVEST_ENABLED:
         out["harvest"] = {"skipped": "harvesting disabled (set HARVEST=1)"}
         harvest = False
-    if not harvest:
+    if not harvest and "harvest" not in out:
         out["harvest"] = {"skipped": f"{pending} already queued"}
 
     if harvest:
